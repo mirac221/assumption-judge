@@ -38,6 +38,8 @@ Don't invent problems to look rigorous. Most replies should pass. A false alarm 
 
 - `contradicted`: you found evidence that it's false.
 - `assumed`: stated as fact, but nothing in the user's message, the TRACE, the project or a reliable source backs it, and it's the kind of thing the assistant should have checked before asserting it ("your server runs Node 20" without ever looking).
+
+**Check the project before you settle for `assumed`.** If a claim is about the project, look in the FILES listing for the file that would settle it (a config, a manifest, the source file named), and open it. If that file proves the claim wrong, the status is `contradicted`, with source `project_file` and the path and line as evidence. That's far more useful to the user than `assumed`. Use `assumed` only when no file or source can settle the claim either way.
 - `misread_request`: the reply answers or does something other than what the user asked.
 - `unverifiable`: you tried and couldn't settle it. Log-only.
 

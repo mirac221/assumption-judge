@@ -6,7 +6,7 @@ Checked against Claude Code 2.1.317 and the Antigravity CLI 1.5.3 in November 20
 |---|---|---|---|
 | Claude Code (CLI, desktop app, IDE) | **Live, in parallel**: background judge, wakes the agent only on HALLUCINATION | Yes, AskUserQuestion | Enforced: a separate process with read and search tools only |
 | Antigravity (CLI, IDE, app) | **Live, synchronous**: the Stop hook judges each reply before the turn ends | Yes, any id from `agy models` | A separate `agy -p` process in plan mode; headless mode denies shell commands |
-| Codex CLI / app | Check mode, before sending | Ask in chat | Rests on the agent's instructions |
+| Codex CLI / app | **Live, synchronous** (project hooks, after `/hooks` trust); check mode as fallback | Ask in chat | A separate `codex exec` in a read-only sandbox, or the claude CLI. **Hook plumbing simulated, not run inside Codex** (see below) |
 | Cursor and others | Check mode if subagents exist, otherwise the headless judge via the claude CLI | Only if the app supports it | Depends |
 
 **For every platform: the judge sees one turn.** It gets the current user message, the reply and this turn's tool trace, not the earlier conversation. Suppose you told the agent "use port 8080" three messages ago and the config says 9090. Then "8080" gets flagged as unbacked. That's usually what you want, since the config wins, but it is a known source of false alarms.
@@ -75,13 +75,47 @@ How to invoke it:
 - If an org's managed settings set `strictPluginOnlyCustomization` for hooks, a personal skill's hooks don't run. Install it as a plugin instead.
 - Web searches send the judge's search queries to the search provider, so don't turn this on for replies about secrets.
 
-## Codex (CLI, IDE extension, app)
+## Codex live mode (CLI, IDE extension, app)
 
-**Install**
+**What was verified**, read-only, against the Codex app's bundled CLI (`codex-cli 0.167.0-alpha.3.2`):
+- `codex features list` shows `hooks` as stable and on.
+- `codex exec --help` lists `--sandbox read-only`, `--ephemeral`, `--output-schema`, `-o`, `-m` and `-C`, and stdin is used for the prompt when none is given (or with `-`).
+- `codex --search exec --help` parses: `--search` is a global flag, and `codex exec --search` is rejected.
+
+**Hook contract**, from Codex's hooks docs:
+- **Where:** project hooks live in `<repo>/.codex/hooks.json`.
+- **UserPromptSubmit** gets `prompt`.
+- **Stop** gets `last_assistant_message`, `transcript_path`, `stop_hook_active` and `model`.
+- **Blocking:** `{"decision":"block","reason":…}` on Stop doesn't reject the turn. It turns the reason into a continuation prompt.
+- **Sync vs async:** hooks are synchronous by default. Async hooks can't block, and there's no async rewake like Claude Code's.
+- **Trust:** non-managed hooks only run after the user trusts them with `/hooks`. Trust is tied to each hook's hash, so changed hooks are skipped until re-trusted. Project hooks also need the project `.codex/` layer to be trusted.
+
+**What `aj.mjs on --platform codex` writes:**
+- Two entries, recognised by their `codex-hook.mjs` path.
+- Anything already in the file stays (tested with a pre-existing user hook, through `on` and `off`).
+- The command is `node C:/…/codex-hook.mjs <mode>`, with **forward slashes**. A backslash path failed under `sh` in testing. The forward-slash command ran correctly under `sh`, PowerShell and `cmd`.
+
+**Simulated end to end** with the documented hook inputs and the exact commands from `hooks.json`:
+- The prompt was captured.
+- Our own continuation prompt was ignored.
+- The activation turn (`$assumption-judge on`) was skipped.
+- A wrong "8080" reply gave `{"decision":"block"}`, with the judge citing `config.toml` = 9090.
+- The interrupt counter went up.
+
+**Not verified**, because Codex itself was deliberately not prompted:
+- a real Codex session firing these hooks;
+- the exact transcript (rollout) record shapes for tool calls, which the parser handles tolerantly (`*call` / `*call_output` / `message`);
+- the `codex exec` judge runner itself.
+
+The claude runner (`--runner claude`) is the tested path.
+
+## Codex check mode (fallback)
+
+**Install** (the skill is needed for both modes)
 - **Skill:** `~/.agents/skills/assumption-judge/` or `<repo>/.agents/skills/assumption-judge/`.
-- **Judge agent:** copy `agents/codex/assumption-judge.toml` to `~/.codex/agents/`.
+- **Judge agent** (only for this fallback): copy `agents/codex/assumption-judge.toml` to `~/.codex/agents/`.
 
-**Mode:** check mode. Codex only spawns subagents when asked, and the skill instructions count as asking: "Spawn the assumption_judge agent with this message: …".
+**When to use it:** only when live mode can't run. That means the user won't trust the hooks, hooks are disabled in their Codex, or no judge CLI is installed. Codex only spawns subagents when asked, and the skill instructions count as asking: "Spawn the assumption_judge agent with this message: …".
 
 **Web search** has to be enabled in the user's Codex config. Without it, set `aj.mjs set web off`, so the judge marks web-only facts `unverifiable` instead of guessing.
 
@@ -91,7 +125,7 @@ How to invoke it:
 
 **Install**
 - **Skill:** `<workspace>/.agents/skills/assumption-judge/` or `~/.gemini/config/skills/assumption-judge/`. Antigravity ignores the Claude Code `hooks:` key in SKILL.md frontmatter, and the skill shows up fine (tested).
-- **Agent** (check mode only, optional): `agents/antigravity/assumption-judge.md`. `agy agents` on CLI 1.5.3 didn't list workspace agent files, so treat this path as unverified.
+- **No agent file.** Antigravity's customization system (rules, skills, plugins, hooks, MCP) has no custom subagent files, and `agy agents` lists none, so this skill ships none for it. Live mode doesn't need one. If live mode can't run, `aj.mjs check --prompt-file p --reply-file r` with `aj.mjs set runner agy` runs the same headless judge on demand.
 
 **Live mode.** `aj.mjs on --platform antigravity --model <id>`, run from the workspace root:
 - **What it writes:**
@@ -103,7 +137,7 @@ How to invoke it:
   2. It takes the reply and tool steps from `transcriptPath`: `PLANNER_RESPONSE` steps hold the text and `tool_calls`, and `GENERIC` steps hold the tool results.
   3. It runs `agy -p <packet> --mode plan --output-format json --json-schema <schema> --model <id>`. The packet goes inline when it fits under the Windows command-line limit, and through a file otherwise.
 - **On HALLUCINATION** it returns `{"decision":"continue","reason":…}`. Antigravity injects that as a system message and the agent re-enters its loop (tested).
-- **Hooks are synchronous.** The turn pauses while the judge runs: about 80 to 120 s with Gemini 3.8 Flash Medium in testing. Pick a faster model or `--runner claude` if that's too slow.
+- **Hooks are synchronous.** The turn pauses while the judge runs: about 25 s with Gemini 3.8 Flash Medium in testing (it was 80 to 120 s before the judge got a file map). Pick a faster model or `--runner claude` if that's too slow.
 - **`off`** sets `"enabled": false` on the entry. It stays on across sessions until then.
 - **Recursion guard:** `ASSUMPTION_JUDGE_CHILD=1` is inherited by the judge's own agy process, so its Stop hook does nothing.
 
@@ -111,7 +145,7 @@ How to invoke it:
 
 **Headless (`agy -p`) gotchas, seen live**
 - Print mode auto-denies shell commands, and a denied command ends the run with **no output at all**. The judge is told to use only its file viewer and web search; if it still tries a command, the log says so plainly.
-- The Gemini judge tended to flag unverified claims as `assumed` without opening the file that would prove them `contradicted`. The Claude judge (`--runner claude`) did open it. Both still interrupt.
+- Without a file map, the Gemini judge flagged unverified claims as `assumed` instead of opening the file that proves them wrong. The packet now lists the project files, and the brief says to open the one that settles a claim before settling for `assumed`. After that, Gemini returned `contradicted` with source `project_file` in 2 out of 2 runs.
 - Each judge run is its own Antigravity conversation, so it shows up in your conversation history.
 
 ## Fallback ladder (anything else)

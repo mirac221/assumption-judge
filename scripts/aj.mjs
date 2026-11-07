@@ -2,20 +2,21 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import {
-  DEFAULTS, MODELS, SKILL_DIR, VERSION, agyBin, appendLog, buildPacket, claudeBin, clip, ensureStateDir, findTranscript,
+  DEFAULTS, MODELS, SKILL_DIR, VERSION, agyBin, appendLog, codexBin, buildPacket, claudeBin, clip, ensureStateDir, findTranscript,
   gate, interruptMessage, isJudgeCommand, loadConfig, readJSON, readLog, readTranscript, runJudge, saveConfig,
   stateDir, traceText, turns, writeJSON,
 } from './lib.mjs';
 
 const HELP = `assumption-judge ${VERSION}
 
-  aj.mjs on [--platform claude-code|antigravity] [--runner claude|agy] [--model <alias|id>]
+  aj.mjs on [--platform claude-code|antigravity|codex] [--runner claude|agy|codex] [--model <alias|id>]
             [--max-interrupts 2] [--no-web]
         Turn live judging on for this project. Claude Code: the skill's hooks do the rest.
-        Antigravity: also writes a Stop hook entry into <workspace>/.agents/hooks.json.
+        Antigravity: also writes a Stop hook into <workspace>/.agents/hooks.json.
+        Codex: also writes UserPromptSubmit + Stop hooks into <repo>/.codex/hooks.json (trust them with /hooks).
   aj.mjs off                      Stop judging. The hooks stay registered but do nothing.
   aj.mjs status                   Settings and the last verdicts.
-  aj.mjs set <key> <value>        model | max-interrupts | min-reply-chars | max-turns | timeout-s | web
+  aj.mjs set <key> <value>        model | runner | max-interrupts | min-reply-chars | max-turns | timeout-s | web
   aj.mjs check [--transcript auto|<file>] [--prompt-file f --reply-file f [--trace-file f]] [--model m]
         Judge one reply now, synchronously (Claude Code: the last reply before this command).
   aj.mjs packet --prompt-file f --reply-file f [--trace-file f]
@@ -43,9 +44,42 @@ function checkModel(m, runner = 'claude') {
   }
 }
 
+const RUNNERS = ['claude', 'agy', 'codex'];
+const binFor = (runner) => (runner === 'agy' ? agyBin() : runner === 'codex' ? codexBin() : claudeBin());
+const envFor = (runner) => (runner === 'agy' ? 'ASSUMPTION_JUDGE_AGY' : runner === 'codex' ? 'ASSUMPTION_JUDGE_CODEX' : 'ASSUMPTION_JUDGE_CLAUDE');
+
 function cliAvailable(runner) {
-  const r = spawnSync(runner === 'agy' ? agyBin() : claudeBin(), ['--version'], { encoding: 'utf8', timeout: 20000, windowsHide: true });
-  return r.error ? null : String(r.stdout || r.stderr || '').trim().split('\n')[0];
+  const r = spawnSync(binFor(runner), ['--version'], { encoding: 'utf8', timeout: 20000, windowsHide: true });
+  return r.error || r.status !== 0 ? null : String(r.stdout || r.stderr || '').trim().split('\n')[0];
+}
+
+// Codex: project hooks in <repo>/.codex/hooks.json. Ours are recognised by the script path they run.
+const quoteIfSpaces = (p) => (/\s/.test(p) ? `"${p}"` : p);
+function setCodexHook(enabled) {
+  const file = path.join(proj, '.codex', 'hooks.json');
+  const doc = readJSON(file, {});
+  const hooks = doc.hooks || {};
+  // Forward slashes: node takes them on Windows, and they survive cmd, PowerShell and sh alike
+  // (sh eats backslashes, and we don't know which shell a given Codex build runs hooks with).
+  const script = path.join(SKILL_DIR, 'scripts', 'codex-hook.mjs').replace(/\\/g, '/');
+  const ours = (group) => (group.hooks || []).some((h) => String(h.command || '').includes('codex-hook.mjs'));
+  let touched = false;
+  for (const ev of ['UserPromptSubmit', 'Stop']) {
+    const before = (hooks[ev] || []).length;
+    hooks[ev] = (hooks[ev] || []).filter((g) => !ours(g));
+    if (hooks[ev].length !== before) touched = true;
+    if (!hooks[ev].length) delete hooks[ev];
+  }
+  if (enabled) {
+    const cmd = (mode) => `node ${quoteIfSpaces(script)} ${mode}`;
+    (hooks.UserPromptSubmit ||= []).push({ hooks: [{ type: 'command', command: cmd('prompt'), timeout: 15 }] });
+    (hooks.Stop ||= []).push({ hooks: [{ type: 'command', command: cmd('stop'), timeout: 600, statusMessage: 'assumption-judge: checking the reply' }] });
+    touched = true;
+  }
+  if (!touched) return null;
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  writeJSON(file, { ...doc, hooks });
+  return file;
 }
 
 // Antigravity has no skill-scoped hooks: the Stop hook lives in <workspace>/.agents/hooks.json.
@@ -77,7 +111,15 @@ function setAgyHook(enabled) {
   return file;
 }
 
-const detectPlatform = () => (process.env.ANTIGRAVITY_CONVERSATION_ID || process.env.ANTIGRAVITY_AGENT ? 'antigravity' : 'claude-code');
+const detectPlatform = () => (process.env.ANTIGRAVITY_CONVERSATION_ID || process.env.ANTIGRAVITY_AGENT ? 'antigravity'
+  : Object.keys(process.env).some((k) => /^CODEX_/.test(k)) && !process.env.CLAUDECODE ? 'codex' : 'claude-code');
+
+// Codex: prefer its own CLI as the judge; fall back to the claude CLI if only that one is installed.
+function defaultRunner(platform) {
+  if (platform === 'antigravity') return 'agy';
+  if (platform === 'codex') return cliAvailable('codex') || !cliAvailable('claude') ? 'codex' : 'claude';
+  return 'claude';
+}
 
 function printVerdict(g, model) {
   if (g.decision === 'HALLUCINATION') { process.stdout.write(interruptMessage(g, model)); return; }
@@ -89,10 +131,10 @@ switch (cmd) {
   case 'on': {
     const cfg = loadConfig(proj);
     const platform = opt('platform', detectPlatform());
-    if (!['claude-code', 'antigravity'].includes(platform)) die(`--platform must be claude-code or antigravity (other apps: use check mode)`);
-    const runner = opt('runner', platform === 'antigravity' ? 'agy' : 'claude');
-    if (!['claude', 'agy'].includes(runner)) die('--runner must be claude or agy');
-    const model = opt('model', cfg.platform === platform ? cfg.model : (platform === 'antigravity' ? 'inherit' : 'sonnet'));
+    if (!['claude-code', 'antigravity', 'codex'].includes(platform)) die('--platform must be claude-code, antigravity or codex (other apps: use check mode)');
+    const runner = opt('runner', defaultRunner(platform));
+    if (!RUNNERS.includes(runner)) die(`--runner must be one of ${RUNNERS.join(', ')}`);
+    const model = opt('model', cfg.platform === platform && cfg.runner === runner ? cfg.model : (runner === 'claude' ? 'sonnet' : 'inherit'));
     checkModel(model, runner);
     const next = {
       ...cfg,
@@ -107,16 +149,20 @@ switch (cmd) {
       enabled_at: new Date().toISOString(),
     };
     saveConfig(proj, next);
-    const hookFile = platform === 'antigravity' ? setAgyHook(true) : null;
+    const hookFile = platform === 'antigravity' ? setAgyHook(true) : platform === 'codex' ? setCodexHook(true) : null;
     const cli = cliAvailable(runner);
     console.log(`assumption-judge ON in ${proj} (${platform})`);
     console.log(`  judge model: ${model}${model === 'inherit' ? ' (whatever model wrote the reply)' : ''} · runner: ${runner} · web: ${next.web ? 'on' : 'off'} · max interrupts per prompt: ${next.max_interrupts}`);
     console.log(cli
-      ? `  judge runner: ${runner === 'agy' ? agyBin() : claudeBin()} (${cli})`
-      : `  WARNING: the ${runner === 'agy' ? 'agy' : 'claude'} CLI was not found, so the live judge cannot run. Set ${runner === 'agy' ? 'ASSUMPTION_JUDGE_AGY' : 'ASSUMPTION_JUDGE_CLAUDE'} to its path, or use check mode.`);
-    if (hookFile) {
+      ? `  judge runner: ${binFor(runner)} (${cli})`
+      : `  WARNING: the ${runner} CLI was not found, so the live judge cannot run. Set ${envFor(runner)} to its path, pick another --runner, or use check mode.`);
+    if (hookFile && platform === 'codex') {
+      console.log(`  UserPromptSubmit + Stop hooks written to ${hookFile}.`);
+      console.log('  ACTION NEEDED: Codex runs project hooks only after you trust them. Run /hooks in Codex, review the two assumption-judge hooks, and trust them (the project .codex/ folder must be trusted too).');
+      console.log('  Codex hooks are synchronous: each reply pauses while the judge runs. You are only interrupted on HALLUCINATION.');
+    } else if (hookFile) {
       console.log(`  Stop hook written to ${hookFile} (entry "${HOOK_NAME}").`);
-      console.log('  Antigravity hooks are synchronous: each reply pauses ~10-60 s while the judge runs. You are only interrupted on HALLUCINATION.');
+      console.log('  Antigravity hooks are synchronous: each reply pauses while the judge runs (~25 s with Gemini Flash). You are only interrupted on HALLUCINATION.');
     } else {
       console.log('  Every reply from the next user message on gets judged in the background. You are only interrupted on HALLUCINATION.');
     }
@@ -125,10 +171,12 @@ switch (cmd) {
   case 'off': {
     const cfg = loadConfig(proj);
     saveConfig(proj, { ...cfg, enabled: false });
-    const hookFile = setAgyHook(false);
-    console.log(hookFile
-      ? `assumption-judge OFF. The "${HOOK_NAME}" entry in ${hookFile} is now disabled.`
-      : 'assumption-judge OFF. Hooks stay registered until the session ends but do nothing.');
+    const agyFile = setAgyHook(false);
+    const codexFile = setCodexHook(false);
+    console.log('assumption-judge OFF.');
+    if (agyFile) console.log(`  The "${HOOK_NAME}" entry in ${agyFile} is now disabled.`);
+    if (codexFile) console.log(`  Its hooks were removed from ${codexFile}.`);
+    if (!agyFile && !codexFile) console.log('  Claude Code hooks stay registered until the session ends but do nothing.');
     break;
   }
   case 'set': {
@@ -138,7 +186,7 @@ switch (cmd) {
     const k = key.replace(/-/g, '_');
     if (!(k in DEFAULTS) || k === 'enabled' || k === 'platform') die(`unknown key "${key}"`);
     if (k === 'model') checkModel(value, cfg.runner);
-    if (k === 'runner' && !['claude', 'agy'].includes(value)) die('runner must be claude or agy');
+    if (k === 'runner' && !RUNNERS.includes(value)) die(`runner must be one of ${RUNNERS.join(', ')}`);
     cfg[k] = ['model', 'runner'].includes(k) ? value : k === 'web' ? !/^(false|off|0|no)$/i.test(value) : Number(value);
     if (typeof cfg[k] === 'number' && !Number.isFinite(cfg[k])) die(`${key} needs a number`);
     saveConfig(proj, cfg);

@@ -5,7 +5,7 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 export const SKILL_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-export const VERSION = '0.2.0';
+export const VERSION = '0.3.0';
 export const MODELS = ['sonnet', 'opus', 'haiku', 'fable', 'inherit'];
 export const DEFAULTS = {
   enabled: false,
@@ -155,7 +155,37 @@ export function agyTurn(file) {
   return { prompt, reply, steps };
 }
 
-export const isJudgeCommand =(text) => /(^|[\s>])\/?assumption-judge(:assumption-judge)?\b/.test(String(text).slice(0, 300));
+/** Codex rollout JSONL -> the last turn { prompt, reply, steps, model }. Tolerant of record variants. */
+export function codexTurn(file) {
+  const steps = [];
+  let prompt = '', reply = '', model = '';
+  const text = (content) => (Array.isArray(content) ? content : [])
+    .filter((c) => /text$/.test(c?.type || '')).map((c) => c.text).join('\n');
+  for (const e of readTranscript(file)) {
+    const p = e.payload || {};
+    if (e.type === 'turn_context' && p.model) model = p.model;
+    if (e.type !== 'response_item') continue;
+    if (p.type === 'message' && p.role === 'user') {
+      const t = text(p.content).trim();
+      // Codex injects environment/instructions blocks as user messages; those aren't the user's words.
+      if (!t || /^<(environment_context|user_instructions|permissions|collaboration_mode|turn_aborted)/.test(t) || /^# AGENTS\.md/.test(t)) continue;
+      prompt = t; reply = ''; steps.length = 0;
+    } else if (p.type === 'message' && p.role === 'assistant') {
+      const t = text(p.content);
+      if (t.trim()) reply = reply ? `${reply}\n${t}` : t;
+    } else if (/call$/.test(p.type || '')) {
+      steps.push(`CALL ${p.name || p.type} ${clip(typeof p.arguments === 'string' ? p.arguments : JSON.stringify(p.arguments ?? p.input ?? p.action ?? {}), 400)}`);
+      reply = '';
+    } else if (/output$/.test(p.type || '')) {
+      const out = typeof p.output === 'string' ? p.output : JSON.stringify(p.output ?? '');
+      steps.push(`RESULT ${clip(out, 700)}`);
+    }
+  }
+  return { prompt, reply, steps, model };
+}
+
+// Matches /assumption-judge, /assumption-judge:assumption-judge, $assumption-judge, @assumption-judge, "use assumption-judge".
+export const isJudgeCommand = (text) => /(^|[\s>])[/$@]?assumption-judge(:assumption-judge)?\b/.test(String(text).slice(0, 300));
 
 export function traceText(steps, budget = 14000) {
   const all = steps.join('\n');
@@ -176,6 +206,28 @@ export function findTranscript(proj) {
 }
 
 // ---------- packet ----------
+
+const SKIP_DIRS = new Set(['node_modules', '.git', '.assumption-judge', 'dist', 'build', 'out', 'target', 'vendor', '__pycache__', '.venv', 'venv', '.next', '.cache', 'coverage']);
+
+/** A shallow listing (2 levels, capped) so the judge knows which files could settle a claim. */
+export function projectMap(root, { depth = 2, max = 150 } = {}) {
+  const lines = [];
+  const walk = (dir, rel, level) => {
+    let entries = [];
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    entries.sort((a, b) => (a.isDirectory() === b.isDirectory() ? a.name.localeCompare(b.name) : a.isDirectory() ? 1 : -1));
+    for (const e of entries) {
+      if (lines.length >= max) return;
+      if (SKIP_DIRS.has(e.name) || (e.isDirectory() && e.name.startsWith('.') && !['.github', '.agents', '.claude'].includes(e.name))) continue;
+      const p = rel ? `${rel}/${e.name}` : e.name;
+      lines.push(e.isDirectory() ? `${p}/` : p);
+      if (e.isDirectory() && level < depth) walk(path.join(dir, e.name), p, level + 1);
+    }
+  };
+  walk(root, '', 1);
+  if (lines.length >= max) lines.push(`… (cut at ${max} entries; use your search tools for the rest)`);
+  return lines.join('\n') || '(empty)';
+}
 
 const fence = (tag, body) => `<<<${tag}\n${String(body ?? '').trim() || '(empty)'}\n${tag}>>>`;
 
@@ -198,6 +250,9 @@ export function buildPacket({ prompt, reply, trace, cwd, web }) {
     '',
     '## WHAT THE ASSISTANT DID THIS TURN (tool calls and results, possibly cut)',
     fence('TRACE', trace),
+    '',
+    '## PROJECT FILES (shallow listing; open the ones that can settle a claim)',
+    fence('FILES', projectMap(cwd)),
   ].join('\n');
 }
 
@@ -218,10 +273,48 @@ function parseVerdict(text) {
 }
 
 export const agyBin = () => process.env.ASSUMPTION_JUDGE_AGY || 'agy';
+export const codexBin = () => process.env.ASSUMPTION_JUDGE_CODEX || 'codex';
 
-/** Runs the judge as a separate process: the claude CLI (default) or Antigravity's agy CLI. Never throws. */
+/** Runs the judge as a separate process: the claude CLI (default), Antigravity's agy, or codex exec. Never throws. */
 export function runJudge(opts) {
-  return opts.runner === 'agy' ? runAgyJudge(opts) : runClaudeJudge(opts);
+  if (opts.runner === 'agy') return runAgyJudge(opts);
+  if (opts.runner === 'codex') return runCodexJudge(opts);
+  return runClaudeJudge(opts);
+}
+
+function runCodexJudge({ packet, model, cwd, web = true, timeoutS = 540 }) {
+  ensureStateDir(cwd);
+  const outFile = path.join(stateDir(cwd), `codex-verdict-${process.pid}-${Date.now()}.json`);
+  const args = [
+    ...(web ? ['--search'] : []), // a global flag: it must come before "exec"
+    'exec',
+    '--sandbox', 'read-only',
+    '--ephemeral',
+    '--skip-git-repo-check',
+    '-C', cwd,
+    '--output-schema', path.join(SKILL_DIR, 'references', 'verdict.schema.json'),
+    '-o', outFile,
+    ...(model && model !== 'inherit' ? ['-m', model] : []),
+    '-', // the packet comes in on stdin
+  ];
+  const started = Date.now();
+  const run = spawnSync(codexBin(), args, {
+    cwd, input: `${packet}\n\nReply with the verdict JSON only, matching the schema in the brief.\n`, encoding: 'utf8',
+    maxBuffer: 1 << 28, timeout: timeoutS * 1000, windowsHide: true,
+    env: { ...process.env, ASSUMPTION_JUDGE_CHILD: '1' },
+  });
+  const ms = Date.now() - started;
+  let text = '';
+  try { text = fs.readFileSync(outFile, 'utf8'); } catch {}
+  try { fs.rmSync(outFile, { force: true }); } catch {}
+  if (process.env.ASSUMPTION_JUDGE_DEBUG) {
+    try { fs.writeFileSync(path.join(stateDir(cwd), 'last-judge.json'), JSON.stringify({ bin: codexBin(), args, out: text, stdout: run.stdout, stderr: run.stderr, status: run.status }, null, 1)); } catch {}
+  }
+  if (run.error) return { ok: false, ms, error: run.error.code === 'ENOENT' ? 'codex CLI not found (set ASSUMPTION_JUDGE_CODEX to its path, or use --runner claude)' : run.error.message };
+  const verdict = parseVerdict(text);
+  const meta = { ms, judge_model: model || 'default', runner: 'codex' };
+  if (!verdict) return { ok: false, ...meta, error: `codex judge produced no verdict (exit ${run.status}): ${clip((run.stderr || '').trim().split('\n').slice(-3).join(' '), 300)}` };
+  return { ok: true, verdict, ...meta };
 }
 
 // Headless agy auto-denies shell commands, and a denied command ends the run with no output at all.

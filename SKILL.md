@@ -4,9 +4,9 @@ description: Command-only. Run this skill only when the user invokes it by name 
 argument-hint: "[on|off|status|check|model <name>]"
 allowed-tools: Bash(node ${CLAUDE_SKILL_DIR}/scripts/aj.mjs *)
 license: Apache-2.0
-compatibility: Needs Node 18+. Live mode runs on Claude Code (CLI, desktop app or IDE; in parallel, via the claude CLI) and Antigravity (a synchronous Stop hook, via the agy CLI). Codex, Cursor and other agent apps with a shell get check mode (a judge subagent per reply). Not for chat-only uploads such as claude.ai skills.
+compatibility: Needs Node 18+. Live mode runs on Claude Code (CLI, desktop app or IDE; in parallel, via the claude CLI), Antigravity (a synchronous Stop hook, via the agy CLI) and Codex (synchronous project hooks, via codex exec or the claude CLI). Cursor and other agent apps with a shell get check mode (a judge subagent per reply). Not for chat-only uploads such as claude.ai skills.
 metadata:
-  version: "0.2.0"
+  version: "0.3.0"
 hooks:
   UserPromptSubmit:
     - hooks:
@@ -60,7 +60,7 @@ Skip this if the user already named a model, or `.assumption-judge/config.json` 
   - `Haiku`: cheapest and fastest, but misses subtle errors and is more likely to raise false alarms
   - `Same as me`: the model that wrote the reply (`inherit`)
 - **Antigravity:** run `agy models` and ask in chat which one the judge should use, or "same as me" (`inherit`). Recommend a stronger model than the cheapest flash tier.
-- **Codex:** ask in chat.
+- **Codex:** ask in chat which model the judge should use (a model id their Codex offers), or "same as me" (`inherit`).
 - **Anything else:** ask only if you can actually choose a subagent's model there.
 
 Be straight about cost: one judge run per reply, each with possible web searches, on the user's plan.
@@ -79,7 +79,13 @@ node <skill>/scripts/aj.mjs on --platform antigravity --model <id from agy model
 ```
 This adds an `assumption-judge` entry to `<workspace>/.agents/hooks.json`. Tell the user it did. `--runner claude` uses the claude CLI as the judge instead of `agy`.
 
-Options for both: `--max-interrupts N` (default 2 per user message) and `--no-web`.
+Codex (run it from the repo root):
+```bash
+node <skill>/scripts/aj.mjs on --platform codex --model <id>
+```
+This adds two hooks (UserPromptSubmit and Stop) to `<repo>/.codex/hooks.json` and leaves any hooks already there untouched. The judge runs with `codex exec` if the codex CLI is on PATH, otherwise with the claude CLI (`--runner` overrides). **Codex only runs project hooks after the user trusts them**, so tell the user to run `/hooks` in Codex, review the two assumption-judge hooks and trust them. The project's `.codex/` layer must be trusted too. Until they do, nothing is judged.
+
+Options for all: `--max-interrupts N` (default 2 per user message) and `--no-web`.
 
 If it prints a warning that the judge's CLI wasn't found, live mode can't run. Tell the user, and use check mode (below).
 
@@ -88,10 +94,10 @@ If it prints a warning that the judge's CLI wasn't found, live mode can't run. T
 - It's on, with the model they chose.
 - From their **next** message on, every reply gets judged, and you'll only be interrupted on a HALLUCINATION.
   - Claude Code: the judge runs in the background, in parallel.
-  - Antigravity: hooks are synchronous, so each reply pauses for about 10 to 60 seconds while the judge runs.
+  - Antigravity and Codex: hooks are synchronous, so each reply pauses while the judge runs (about 25 seconds with Gemini Flash in testing).
 - `/assumption-judge off` stops it.
   - Claude Code: it also stops when the session ends, so invoke it again in a new session.
-  - Antigravity: it stays on for the workspace until `off`.
+  - Antigravity and Codex: it stays on for the workspace until `off`, which also removes or disables the hook entries.
 
 The reply you're writing now (the activation turn) isn't judged.
 
@@ -119,6 +125,16 @@ You keep working while the judge runs. It doesn't block you or the user.
 
 On HALLUCINATION the hook returns `{"decision":"continue"}` with the correction, which puts you straight back in the loop before the turn ends. On PASS it returns nothing.
 
+## How live mode works (Codex)
+
+`aj.mjs on --platform codex` writes two project hooks to `<repo>/.codex/hooks.json`. The user has to trust them with `/hooks` first.
+1. **UserPromptSubmit** saves the user's message verbatim. It ignores the continuation prompts that the hook itself causes.
+2. **Stop** (synchronous) reads your reply from `last_assistant_message` and the tool steps from `transcript_path`. It then runs the judge:
+   - `codex --search exec --sandbox read-only --ephemeral --output-schema <schema> -o <file>`, with the packet on stdin;
+   - or the claude CLI.
+
+   On HALLUCINATION it returns `{"decision":"block","reason":…}`, and Codex turns the reason into a continuation prompt for you. On PASS it prints nothing.
+
 ## When the judge interrupts you
 
 You'll get a system message starting with `[assumption-judge] HALLUCINATION`. Then:
@@ -131,7 +147,7 @@ You'll get a system message starting with `[assumption-judge] HALLUCINATION`. Th
 
 If you get `[assumption-judge] The judge could not run`, tell the user once. The reply wasn't checked.
 
-## Check mode (Codex, Cursor, others, or no judge CLI)
+## Check mode (Cursor, others, or no hooks / no judge CLI)
 
 Without hooks, nothing can run on its own, so the check happens **before** you send instead:
 
@@ -170,8 +186,9 @@ Everything else is logged in `.assumption-judge/log.jsonl` and never interrupts.
 | `scripts/aj.mjs` | Commands: on, off, status, set, check, packet, gate |
 | `scripts/watch.mjs` | The hook handler for Claude Code live mode |
 | `scripts/agy-hook.mjs` | The Stop hook handler for Antigravity live mode |
+| `scripts/codex-hook.mjs` | The UserPromptSubmit and Stop hook handler for Codex live mode |
 | `scripts/lib.mjs` | Transcript parsing, packet, headless judge runner, gate |
 | [references/judge-brief.md](references/judge-brief.md) | The judge's instructions. Don't edit them to go easier on yourself. |
 | [references/verdict.schema.json](references/verdict.schema.json) | The verdict format, enforced with `--json-schema` |
 | [references/platforms.md](references/platforms.md) | Install, model choice and limits per platform |
-| `agents/` | Judge agent definitions for Claude Code, Codex and Antigravity (check mode) |
+| `agents/` | Judge agent definitions for check mode (Claude Code and Cursor subagents, Codex) |

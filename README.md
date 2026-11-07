@@ -4,7 +4,7 @@
 
 Turn it on, and every reply your AI finishes goes to an independent judge. The judge never sees your AI's reasoning, only three things: your message, the reply, and what the tools actually returned. It checks the claims against the project files, the web and its own knowledge, then writes **PASS** or **HALLUCINATION**. A PASS stays silent. A HALLUCINATION interrupts your AI with the evidence, and your AI has to tell you and correct itself.
 
-Works live on **Claude Code** and **Antigravity**, with a check mode for Codex, Cursor and any other agent that supports [Agent Skills](https://agentskills.io).
+Works live on **Claude Code** and **Antigravity** (both tested end to end) and **Codex** (hook plumbing tested by simulation), with a check mode for Cursor and any other agent that supports [Agent Skills](https://agentskills.io).
 
 ## Install
 
@@ -56,8 +56,9 @@ Arguments: `on` (the default), `off`, `status`, `check` (judge the last reply ri
 - **Silence means pass.** You only hear from the judge when it catches something.
 - **How "live" it is depends on the app:**
   - **Claude Code:** the judge runs **in parallel** in the background. You and your AI keep going, and an idle session gets woken when it catches something.
-  - **Antigravity:** its hooks are synchronous, so each reply pauses while the judge runs (80 to 120 s with Gemini Flash in testing). A catch puts your AI straight back to work before the turn ends.
-  - **Codex, Cursor and others:** no hooks, so your AI checks each draft with a judge subagent **before** sending.
+  - **Antigravity:** its hooks are synchronous, so each reply pauses while the judge runs (about 25 s with Gemini Flash in testing). A catch puts your AI straight back to work before the turn ends.
+  - **Codex:** synchronous project hooks, like Antigravity. Codex only runs them after you trust them, so run `/hooks` in Codex once after turning it on.
+  - **Cursor and others:** no hooks, so your AI checks each draft with a judge subagent **before** sending.
 - **It costs tokens:** one judge run per reply, with web searches when needed, on your own plan. `status` shows the running total.
 - **No ping-pong:** at most 2 interrupts per message of yours. Only replies like "ok" or "noted" are skipped.
 
@@ -66,6 +67,7 @@ Arguments: `on` (the default), `off`, `status`, `check` (judge the last reply ri
 - Node.js 18 or newer
 - Live mode on Claude Code: the `claude` CLI (the Claude desktop app ships its own copy, and the judge finds it)
 - Live mode on Antigravity: the `agy` CLI (or the `claude` CLI, with `--runner claude`)
+- Live mode on Codex: the `codex` CLI on PATH, or the `claude` CLI
 
 ## Setup steps (for the AI doing the install)
 
@@ -83,7 +85,7 @@ On Windows PowerShell, use `$HOME\...` instead of `~/...`.
 |---|---|---|---|
 | Claude Code | `~/.claude/skills/assumption-judge` | not needed for live mode | |
 | Antigravity | `~/.gemini/config/skills/assumption-judge` | not needed for live mode | |
-| Codex | `~/.agents/skills/assumption-judge` | `agents/codex/assumption-judge.toml` | `~/.codex/agents/` |
+| Codex | `~/.agents/skills/assumption-judge` | `agents/codex/assumption-judge.toml` (check-mode fallback only) | `~/.codex/agents/` |
 | Cursor | `~/.cursor/skills/assumption-judge` (skip it if the skill is already in `~/.claude/skills` or `~/.agents/skills`) | `agents/claude-code/assumption-judge.md` if your Cursor has subagents | your agents folder |
 | Anything else | your skills folder | the closest match | your agents folder |
 
@@ -159,8 +161,9 @@ scripts/
   aj.mjs                   on / off / status / set / check / packet / gate
   watch.mjs                Claude Code hook handler (prompt capture + async Stop judge)
   agy-hook.mjs             Antigravity Stop hook handler
-  lib.mjs                  transcript parsing, packet, judge runners (claude / agy), the gate
-agents/                    judge agents for check mode (Claude Code, Codex, Antigravity), plus Codex's command-only setting
+  codex-hook.mjs           Codex UserPromptSubmit + Stop hook handler
+  lib.mjs                  transcript parsing, packet, judge runners (claude / agy / codex), the gate
+agents/                    judge agents for check mode (Claude Code / Cursor subagents, Codex), plus Codex's command-only setting
 .claude-plugin/            Claude Code plugin files
 ```
 
