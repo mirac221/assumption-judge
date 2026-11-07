@@ -138,6 +138,8 @@ git clone https://github.com/mirac221/assumption-judge "$HOME\.claude\skills\ass
 
 | Problem | What assumption-judge does |
 |---|---|
+| The judge only skims | It has to list **every** factual claim it checked, including the ones that hold up, as proof of work. Anything that changes over time (AI models, versions, prices, releases) must be checked on the web, and `status` shows how many claims each verdict covered and how many were web-verified. |
+| The judge calls a brand-new model fake from stale memory | A time-sensitive claim can never be flagged (or passed) from the judge's own memory, only from a live source. Not finding something isn't proof that it doesn't exist. |
 | The AI fact-checks itself | The judge is a separate process with no access to the AI's reasoning. It gets only your words, the reply and the real tool results. |
 | The judge invents problems | A script, the gate, throws out any finding that doesn't quote the reply word for word, has no evidence, cites the web without a URL, or rests only on "I know this" below 90% confidence. Minor and unsure findings are logged and never interrupt. |
 | The judge says PASS but lists an error | The gate recomputes the verdict from the findings, so a wrong label doesn't let an error through. |

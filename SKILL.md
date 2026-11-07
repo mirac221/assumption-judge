@@ -6,7 +6,7 @@ allowed-tools: Bash(node ${CLAUDE_SKILL_DIR}/scripts/aj.mjs *)
 license: Apache-2.0
 compatibility: Needs Node 18+. Live mode runs on Claude Code (CLI, desktop app or IDE; in parallel, via the claude CLI), Antigravity (a synchronous Stop hook, via the agy CLI) and Codex (synchronous project hooks, via codex exec or the claude CLI). Cursor and other agent apps with a shell get check mode (a judge subagent per reply). Not for chat-only uploads such as claude.ai skills.
 metadata:
-  version: "0.4.0"
+  version: "0.5.0"
 hooks:
   UserPromptSubmit:
     - hooks:

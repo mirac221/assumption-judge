@@ -61,7 +61,7 @@ export async function main(mode) {
   }
 
   const g = gate(res.verdict, { reply, prompt });
-  appendLog(proj, { ...base, ...meta, decision: g.decision, judge_said: g.judge_said, checked: g.checked, summary: g.summary, counted: g.counted, dropped: g.dropped, reply: clip(reply, 2000) });
+  appendLog(proj, { ...base, ...meta, decision: g.decision, judge_said: g.judge_said, checked: g.checked, summary: g.summary, counted: g.counted, dropped: g.dropped, ledger: g.ledger, reply: clip(reply, 2000) });
   if (g.decision !== 'HALLUCINATION') return;
   writeJSON(sf, { ...st, interrupts: (st.interrupts || 0) + 1 });
   block(interruptMessage(g, model));

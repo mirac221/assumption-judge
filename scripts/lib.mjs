@@ -5,7 +5,7 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 export const SKILL_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-export const VERSION = '0.4.0';
+export const VERSION = '0.5.0';
 export const MODELS = ['sonnet', 'opus', 'haiku', 'fable', 'inherit'];
 export const DEFAULTS = {
   enabled: false,
@@ -16,7 +16,7 @@ export const DEFAULTS = {
   web: true,
   max_interrupts: 2,
   min_reply_chars: 12, // only skips "ok" / "noted"; short confident answers are where wrong facts hide
-  max_turns: 25,
+  max_turns: 40,
   timeout_s: 540,
 };
 const INTERRUPTING = new Set(['contradicted', 'assumed', 'misread_request']);
@@ -463,7 +463,7 @@ export function gate(verdict, { reply, prompt }) {
     return { decision: 'JUDGE_ERROR', counted: [], dropped: [], summary: 'no valid verdict JSON' };
   }
   const nReply = norm(reply), nPrompt = norm(prompt);
-  const counted = [], dropped = [];
+  const counted = [], dropped = [], supported = [];
   verdict.claims.forEach((c, i) => {
     const why = [];
     const conf = Number(c?.confidence);
@@ -479,9 +479,16 @@ export function gate(verdict, { reply, prompt }) {
     if (c?.source === 'knowledge' && !(c?.status === 'contradicted' && conf >= 0.9)) {
       why.push('knowledge-only needs status contradicted at confidence >= 0.9');
     }
+    // A model's memory is out of date by definition: it must not call a new model, version or price fake
+    // (or real) from memory. Time-sensitive verdicts need a live source.
+    if (c?.time_sensitive && !['web', 'project_file', 'transcript', 'user_message'].includes(c?.source)) {
+      why.push('time-sensitive claim judged from memory; it needs a web source');
+    }
     const entry = { id: `C${i + 1}`, ...c };
+    if (c?.status === 'supported') { supported.push(entry); return; }
     if (why.length) dropped.push({ ...entry, dropped_because: why }); else counted.push(entry);
   });
+  const all = verdict.claims;
   return {
     decision: counted.length ? 'HALLUCINATION' : 'PASS',
     judge_said: verdict.verdict,
@@ -489,6 +496,14 @@ export function gate(verdict, { reply, prompt }) {
     summary: verdict.summary,
     counted,
     dropped,
+    // Proof of work, for the log and "status": how much the judge actually looked at, and how.
+    ledger: {
+      claims: all.length,
+      supported: supported.length,
+      web: all.filter((c) => c?.source === 'web').length,
+      time_sensitive: all.filter((c) => c?.time_sensitive).length,
+      time_sensitive_from_memory: all.filter((c) => c?.time_sensitive && c?.source === 'knowledge').length,
+    },
   };
 }
 

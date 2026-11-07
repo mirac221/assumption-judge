@@ -4,7 +4,7 @@ description: Independent fact-checker for the assumption-judge skill (check mode
 tools: Read, Grep, Glob, WebSearch, WebFetch
 model: inherit
 omitClaudeMd: true
-maxTurns: 25
+maxTurns: 40
 color: yellow
 ---
 

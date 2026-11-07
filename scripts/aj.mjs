@@ -233,7 +233,8 @@ switch (cmd) {
     for (const r of log.slice(-5)) {
       const what = r.decision === 'HALLUCINATION' ? r.counted?.map((c) => `${c.id} ${c.status}: "${clip(c.quote, 60)}"`).join(' | ')
         : r.error || r.why || r.summary || '';
-      console.log(`  ${r.at?.slice(11, 19) ?? ''} ${r.decision} ${clip(what, 160)}`);
+      const l = r.ledger ? ` [${r.ledger.claims} claims, ${r.ledger.supported} ok, ${r.ledger.web} via web]` : '';
+      console.log(`  ${r.at?.slice(11, 19) ?? ''} ${r.decision}${l} ${clip(what, 160)}`);
     }
     break;
   }
@@ -269,7 +270,7 @@ switch (cmd) {
     const res = runJudge({ runner: cfg.runner, packet: buildPacket({ prompt, reply, trace, cwd: proj, web: cfg.web }), model: m, cwd: proj, web: cfg.web, maxTurns: cfg.max_turns, timeoutS: cfg.timeout_s });
     if (!res.ok) { appendLog(proj, { decision: 'JUDGE_ERROR', manual: true, error: res.error, model: m }); die(res.error); }
     const g = gate(res.verdict, { reply, prompt });
-    appendLog(proj, { manual: true, decision: g.decision, judge_said: g.judge_said, checked: g.checked, model: m, ms: res.ms, cost_usd: res.cost_usd, turns: res.turns, summary: g.summary, counted: g.counted, dropped: g.dropped, reply: clip(reply, 2000) });
+    appendLog(proj, { manual: true, decision: g.decision, judge_said: g.judge_said, checked: g.checked, model: m, ms: res.ms, cost_usd: res.cost_usd, turns: res.turns, summary: g.summary, counted: g.counted, dropped: g.dropped, ledger: g.ledger, reply: clip(reply, 2000) });
     printVerdict(g, m);
     if (flag('json')) console.log(JSON.stringify(g, null, 2));
     process.exitCode = g.decision === 'HALLUCINATION' ? 2 : 0;
@@ -298,7 +299,7 @@ switch (cmd) {
     let verdict = null;
     try { verdict = JSON.parse(readText(vf).trim().replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/, '')); } catch {}
     const g = gate(verdict, pending);
-    appendLog(proj, { manual: true, reviewer: 'subagent', decision: g.decision, summary: g.summary, counted: g.counted, dropped: g.dropped, reply: clip(pending.reply, 2000) });
+    appendLog(proj, { manual: true, reviewer: 'subagent', decision: g.decision, summary: g.summary, counted: g.counted, dropped: g.dropped, ledger: g.ledger, reply: clip(pending.reply, 2000) });
     printVerdict(g, opt('model', 'subagent'));
     process.exitCode = g.decision === 'HALLUCINATION' ? 2 : g.decision === 'JUDGE_ERROR' ? 1 : 0;
     break;

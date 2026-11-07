@@ -54,7 +54,7 @@ function judgeTurn({ input, scope, prompt, answer, steps }) {
     return { error: res.error, model };
   }
   const g = gate(res.verdict, { reply: answer, prompt });
-  appendLog(stateRoot, { ...base, ...meta, decision: g.decision, judge_said: g.judge_said, checked: g.checked, summary: g.summary, counted: g.counted, dropped: g.dropped, reply: clip(answer, 2000) });
+  appendLog(stateRoot, { ...base, ...meta, decision: g.decision, judge_said: g.judge_said, checked: g.checked, summary: g.summary, counted: g.counted, dropped: g.dropped, ledger: g.ledger, reply: clip(answer, 2000) });
   return { g, model };
 }
 
