@@ -219,7 +219,7 @@ export function codexTurn(file) {
 }
 
 /** A turn that ran aj.mjs is the skill managing itself (on, off, status...): never judge it. */
-export const isManagementTurn = (steps = []) => steps.some((s) => /^CALL/.test(s) && /aj.mjs/.test(s));
+export const isManagementTurn = (steps = []) => steps.some((s) => /^CALL\b/.test(s) && /\baj\.mjs\b/.test(s));
 
 // Matches /assumption-judge, /assumption-judge:assumption-judge, $assumption-judge, @assumption-judge, "use assumption-judge".
 export const isJudgeCommand = (text) => /(^|[\s>])[/$@]?assumption-judge(:assumption-judge)?\b/.test(String(text).slice(0, 300));
