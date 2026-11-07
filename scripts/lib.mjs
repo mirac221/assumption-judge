@@ -5,7 +5,7 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 export const SKILL_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-export const VERSION = '0.5.0';
+export const VERSION = '0.5.1';
 export const MODELS = ['sonnet', 'opus', 'haiku', 'fable', 'inherit'];
 export const DEFAULTS = {
   enabled: false,
@@ -218,6 +218,9 @@ export function codexTurn(file) {
   return { prompt, reply, steps, model };
 }
 
+/** A turn that ran aj.mjs is the skill managing itself (on, off, status...): never judge it. */
+export const isManagementTurn = (steps = []) => steps.some((s) => /^CALL/.test(s) && /aj.mjs/.test(s));
+
 // Matches /assumption-judge, /assumption-judge:assumption-judge, $assumption-judge, @assumption-judge, "use assumption-judge".
 export const isJudgeCommand = (text) => /(^|[\s>])[/$@]?assumption-judge(:assumption-judge)?\b/.test(String(text).slice(0, 300));
 
@@ -366,7 +369,11 @@ function runAgyJudge(opts) {
   if (first.ok || !first.denied) return first;
   // The judge reached for a shell command and headless mode killed the run. One retry, told plainly.
   const second = runAgyJudgeOnce({ ...opts, retry: true });
-  return second.ok ? { ...second, retried: true } : { ...second, error: `${second.error} (also on retry)` };
+  if (second.ok) return { ...second, retried: true };
+  // Still denied: use the claude CLI judge (read/search tools only, never a shell) if it's installed.
+  const viaClaude = runClaudeJudge({ ...opts, model: /^claude-|^(sonnet|opus|haiku|fable)$/.test(opts.model || '') ? opts.model.replace(/-thinking$/, '') : 'sonnet' });
+  if (viaClaude.ok) return { ...viaClaude, runner: 'claude (fallback after agy tool denial)' };
+  return { ...second, error: `${second.error} (also on retry, and the claude CLI fallback failed: ${viaClaude.error})` };
 }
 
 function runAgyJudgeOnce({ packet, model, cwd, timeoutS = 540, retry = false }) {

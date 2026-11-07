@@ -7,7 +7,7 @@
 import fs from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import {
-  appendLog, buildPacket, clip, codexTurn, gate, interruptMessage, isJudgeCommand, loadConfig, readJSON,
+  appendLog, isManagementTurn, buildPacket, clip, codexTurn, gate, interruptMessage, isJudgeCommand, loadConfig, readJSON,
   readStdin, runJudge, sessionFile, traceText, writeJSON,
 } from './lib.mjs';
 
@@ -36,7 +36,7 @@ export async function main(mode) {
   const turn = codexTurn(input.transcript_path);
   const prompt = String(st.prompt || turn.prompt || '').trim();
   const reply = String(input.last_assistant_message ?? turn.reply ?? '').trim();
-  if (!prompt || isJudgeCommand(prompt)) return; // activation turn, or nothing to judge against
+  if (!prompt || isJudgeCommand(prompt) || isManagementTurn(turn.steps)) return; // activation turn, or nothing to judge against
 
   const base = { session: input.session_id, platform: 'codex' };
   if (reply.length < cfg.min_reply_chars) return appendLog(proj, { ...base, decision: 'SKIPPED', why: 'short reply' });

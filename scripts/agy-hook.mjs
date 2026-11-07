@@ -15,7 +15,7 @@ import crypto from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import {
-  agyTurn, appendLog, buildPacket, clip, gate, interruptMessage, isJudgeCommand, loadConfig, readJSON,
+  agyTurn, appendLog, isManagementTurn, buildPacket, clip, gate, interruptMessage, isJudgeCommand, loadConfig, readJSON,
   readStdin, runJudge, sessionFile, stateDir, traceText, writeJSON,
 } from './lib.mjs';
 
@@ -67,7 +67,7 @@ async function onStop(input) {
   const turn = agyTurn(input.transcriptPath);
   const prompt = String(input.lastUserInput || turn.prompt || '').trim();
   const answer = String(turn.reply || '').trim();
-  if (!prompt || isJudgeCommand(prompt)) return out({});
+  if (!prompt || isJudgeCommand(prompt) || isManagementTurn(turn.steps)) return out({});
 
   const sf = sessionFile(stateRoot, input.conversationId);
   const promptKey = crypto.createHash('sha1').update(prompt).digest('hex');
