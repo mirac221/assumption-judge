@@ -52,11 +52,14 @@ Arguments: `on` (the default), `off`, `status`, `check` (judge the last reply ri
 
 - **The model question:** your AI asks once which model the judge runs on.
   - Claude Code: Sonnet (recommended), Opus, Haiku, or the same model as the main agent.
-  - Antigravity: anything `agy models` lists.
+  - Antigravity: anything `agy models` lists, including its own Claude Sonnet (recommended) and Opus.
 - **Silence means pass.** You only hear from the judge when it catches something.
 - **How "live" it is depends on the app:**
   - **Claude Code:** the judge runs **in parallel** in the background. You and your AI keep going, and an idle session gets woken when it catches something.
-  - **Antigravity:** its hooks are synchronous, so each reply pauses while the judge runs (about 25 s with Gemini Flash in testing). A catch puts your AI straight back to work before the turn ends.
+  - **Antigravity:** you pick.
+    - `sync`: each reply pauses while the judge runs (about 15 s with Claude Sonnet via Antigravity), and a catch sends your AI straight back to fix it.
+    - `deferred`: no pause at all, and a catch is raised at the start of your next message.
+    - It works with or without a workspace open (`--global`).
   - **Codex:** synchronous project hooks, like Antigravity. Codex only runs them after you trust them, so run `/hooks` in Codex once after turning it on.
   - **Cursor and others:** no hooks, so your AI checks each draft with a judge subagent **before** sending.
 - **It costs tokens:** one judge run per reply, with web searches when needed, on your own plan. `status` shows the running total.

@@ -5,7 +5,7 @@ Checked against Claude Code 2.1.317 and the Antigravity CLI 1.5.3 in November 20
 | Platform | Mode | Model choice | Independence |
 |---|---|---|---|
 | Claude Code (CLI, desktop app, IDE) | **Live, in parallel**: background judge, wakes the agent only on HALLUCINATION | Yes, AskUserQuestion | Enforced: a separate process with read and search tools only |
-| Antigravity (CLI, IDE, app) | **Live, synchronous**: the Stop hook judges each reply before the turn ends | Yes, any id from `agy models` | A separate `agy -p` process in plan mode; headless mode denies shell commands |
+| Antigravity (app, CLI, IDE) | **Live**, `sync` (judged before the turn ends) or `deferred` (no pause, a catch is raised next message); workspace or `--global` | Yes, any id from `agy models`, including Antigravity's Claude Sonnet / Opus | A separate `agy -p` process in plan mode; headless mode denies shell commands |
 | Codex CLI / app | **Live, synchronous** (project hooks, after `/hooks` trust); check mode as fallback | Ask in chat | A separate `codex exec` in a read-only sandbox, or the claude CLI. **Hook plumbing simulated, not run inside Codex** (see below) |
 | Cursor and others | Check mode if subagents exist, otherwise the headless judge via the claude CLI | Only if the app supports it | Depends |
 
@@ -127,11 +127,36 @@ The claude runner (`--runner claude`) is the tested path.
 - **Skill:** `<workspace>/.agents/skills/assumption-judge/` or `~/.gemini/config/skills/assumption-judge/`. Antigravity ignores the Claude Code `hooks:` key in SKILL.md frontmatter, and the skill shows up fine (tested).
 - **No agent file.** Antigravity's customization system (rules, skills, plugins, hooks, MCP) has no custom subagent files, and `agy agents` lists none, so this skill ships none for it. Live mode doesn't need one. If live mode can't run, `aj.mjs check --prompt-file p --reply-file r` with `aj.mjs set runner agy` runs the same headless judge on demand.
 
-**Live mode.** `aj.mjs on --platform antigravity --model <id>`, run from the workspace root:
+**Reported from the Antigravity app (fixed in 0.4.0):**
+- It didn't work with no workspace open.
+- Every reply froze while the judge ran.
+- `check` picked up a Claude Code transcript. That one is a privacy bug: the wrong app's conversation went to the judge.
+
+The fixes are `--global`, `--mode deferred`, and a `check` that only reads the current app's transcripts and refuses to guess.
+
+**Judge model.** Antigravity offers Claude as third-party models, and the agy judge runs them fine. Live test, wrong "8080" against `config.toml` = 9090:
+- `claude-sonnet-4-6`: `contradicted`/`project_file` in 14.5 s
+- `claude-opus-4-6-thinking`: the same, in 21 s
+- `gemini-3.8-flash-medium`: the same, in 17 to 27 s
+
+Sonnet is the recommendation.
+
+**Global hooks (`--global`).**
+- **What it writes:** `~/.gemini/config/hooks.json`, Antigravity's global customization root per its built-in customization docs, plus the shim next to it. State goes to `~/.assumption-judge/`.
+- **Scope rules:** a workspace with its own enabled entry wins, and the global hook stands down. With no workspace, the judge runs in an empty `~/.assumption-judge/no-workspace/` folder and never gets a listing of your home folder.
+- **Not verified live:** that the app loads the global `hooks.json` (testing it means writing your real global config). The scope logic is tested with simulated input.
+
+**Deferred mode (`--mode deferred`), tested live on the CLI:**
+- the wrong-answer turn returned in 7 s with no judge wait;
+- the background judge caught it in 13.5 s;
+- the PreInvocation hook delivered the correction at the start of the next message, and cleared it.
+
+**Live mode.** `aj.mjs on --platform antigravity --model <id>` from the workspace root (or `--global`):
 - **What it writes:**
   - an `assumption-judge` entry in `<workspace>/.agents/hooks.json`
   - a shim, `.agents/assumption-judge-hook.cjs`
 - **Why the shim:** Antigravity runs hook commands via `cmd /c` on Windows, and a quoted absolute path then reaches node *with the quotes in it* (seen live). So the command is a quote-free `node assumption-judge-hook.cjs`, and the shim holds the real path.
+- **PreInvocation** (`node assumption-judge-hook.cjs pre`) returns `{}` in sync mode. In deferred mode it injects a waiting verdict as `{"injectSteps":[{"systemMessage":{"systemMessage":…}}]}`.
 - **Each Stop** (`terminationReason: NO_TOOL_CALL`):
   1. The hook takes the user's words from `lastUserInput`.
   2. It takes the reply and tool steps from `transcriptPath`: `PLANNER_RESPONSE` steps hold the text and `tool_calls`, and `GENERIC` steps hold the tool results.
@@ -144,9 +169,10 @@ The claude runner (`--runner claude`) is the tested path.
 **Model:** run `agy models` and ask in chat. `inherit` uses the session's `modelName`.
 
 **Headless (`agy -p`) gotchas, seen live**
-- Print mode auto-denies shell commands, and a denied command ends the run with **no output at all**. The judge is told to use only its file viewer and web search; if it still tries a command, the log says so plainly.
+- Print mode auto-denies shell commands, and a denied command ends the run with **no output at all**. The judge is told to use only its file viewer and web search. If it still tries a command, the runner retries once with a blunter instruction, and if that fails too, the log says so plainly.
+- The *main* agent, once corrected, sometimes reaches for `ls` to double-check. Print mode denies that; the app asks you. The correction message suggests opening the cited file directly.
 - Without a file map, the Gemini judge flagged unverified claims as `assumed` instead of opening the file that proves them wrong. The packet now lists the project files, and the brief says to open the one that settles a claim before settling for `assumed`. After that, Gemini returned `contradicted` with source `project_file` in 2 out of 2 runs.
-- Each judge run is its own Antigravity conversation, so it shows up in your conversation history.
+- Each `agy` judge run is its own Antigravity conversation, so it shows up in your conversation history. agy has no "don't save" flag. `--runner claude` avoids it if the claude CLI is installed. `check` skips those judge conversations when it looks for yours.
 
 ## Fallback ladder (anything else)
 

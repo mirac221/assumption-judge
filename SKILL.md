@@ -6,7 +6,7 @@ allowed-tools: Bash(node ${CLAUDE_SKILL_DIR}/scripts/aj.mjs *)
 license: Apache-2.0
 compatibility: Needs Node 18+. Live mode runs on Claude Code (CLI, desktop app or IDE; in parallel, via the claude CLI), Antigravity (a synchronous Stop hook, via the agy CLI) and Codex (synchronous project hooks, via codex exec or the claude CLI). Cursor and other agent apps with a shell get check mode (a judge subagent per reply). Not for chat-only uploads such as claude.ai skills.
 metadata:
-  version: "0.3.0"
+  version: "0.4.0"
 hooks:
   UserPromptSubmit:
     - hooks:
@@ -45,7 +45,7 @@ The user's argument picks one. No argument means `on`.
 | `/assumption-judge` or `on` | Steps 1 to 3 below |
 | `off` | `node <skill>/scripts/aj.mjs off`, then confirm in one line |
 | `status` | `node <skill>/scripts/aj.mjs status`, then relay it |
-| `check` | `node <skill>/scripts/aj.mjs check`: judges your last reply right now, synchronously |
+| `check` | `node <skill>/scripts/aj.mjs check --platform <claude-code\|antigravity\|codex>`: judges your last finished reply in **this** app's current conversation, synchronously. It never reads another app's transcripts. |
 | `model <name>` | `node <skill>/scripts/aj.mjs set model <name>`, then confirm |
 
 ## Turning it on
@@ -59,7 +59,11 @@ Skip this if the user already named a model, or `.assumption-judge/config.json` 
   - `Opus`: strictest, catches subtle errors, most quota
   - `Haiku`: cheapest and fastest, but misses subtle errors and is more likely to raise false alarms
   - `Same as me`: the model that wrote the reply (`inherit`)
-- **Antigravity:** run `agy models` and ask in chat which one the judge should use, or "same as me" (`inherit`). Recommend a stronger model than the cheapest flash tier.
+- **Antigravity:** run `agy models` and ask in chat, in one message, two questions.
+  - **Which model the judge runs on.** Antigravity offers Claude as third-party models, so lead with its Sonnet id (e.g. `claude-sonnet-4-6`, recommended: about 15 s per check in testing) and its Opus id (`claude-opus-4-6-thinking`: strictest, slower). Then the Gemini ids, or "same as me" (`inherit`). Use the exact ids `agy models` prints.
+  - **"Should every reply wait for the check, or should the check run in the background?"**
+    - `sync` (default): each reply pauses while the judge runs, and a catch is fixed right away.
+    - `deferred`: no pause, but a catch is raised at the start of their *next* message.
 - **Codex:** ask in chat which model the judge should use (a model id their Codex offers), or "same as me" (`inherit`).
 - **Anything else:** ask only if you can actually choose a subagent's model there.
 
@@ -73,11 +77,14 @@ node <skill>/scripts/aj.mjs on --model sonnet
 ```
 Models: `sonnet`, `opus`, `haiku`, `fable`, `inherit`, or a full `claude-*` id.
 
-Antigravity (run it from the workspace root):
+Antigravity (app, CLI or IDE):
 ```bash
-node <skill>/scripts/aj.mjs on --platform antigravity --model <id from agy models>
+node <skill>/scripts/aj.mjs on --platform antigravity --model claude-sonnet-4-6 --mode sync
 ```
-This adds an `assumption-judge` entry to `<workspace>/.agents/hooks.json`. Tell the user it did. `--runner claude` uses the claude CLI as the judge instead of `agy`.
+- **A workspace is open:** run it from the workspace root. It adds an `assumption-judge` entry to `<workspace>/.agents/hooks.json`.
+- **No workspace is open** (Antigravity says you're outside of a project), or the user wants it everywhere: add `--global`. That writes the entry to `~/.gemini/config/hooks.json` and keeps state in `~/.assumption-judge/`. A workspace with its own entry still wins, so nothing runs twice.
+- Tell the user which file you changed, and that Antigravity may need a reload or a new conversation before the hooks fire.
+- `--runner claude` uses the claude CLI instead of `agy`: no extra Antigravity conversations, but it needs that CLI installed.
 
 Codex (run it from the repo root):
 ```bash
@@ -94,10 +101,12 @@ If it prints a warning that the judge's CLI wasn't found, live mode can't run. T
 - It's on, with the model they chose.
 - From their **next** message on, every reply gets judged, and you'll only be interrupted on a HALLUCINATION.
   - Claude Code: the judge runs in the background, in parallel.
-  - Antigravity and Codex: hooks are synchronous, so each reply pauses while the judge runs (about 25 seconds with Gemini Flash in testing).
+  - Antigravity, `sync`: each reply pauses while the judge runs (about 15 to 25 s with Claude Sonnet via Antigravity in testing).
+  - Antigravity, `deferred`: no pause, and a catch shows up at the start of their next message.
+  - Codex: hooks are synchronous, so each reply pauses while the judge runs.
 - `/assumption-judge off` stops it.
   - Claude Code: it also stops when the session ends, so invoke it again in a new session.
-  - Antigravity and Codex: it stays on for the workspace until `off`, which also removes or disables the hook entries.
+  - Antigravity and Codex: it stays on until `off` (add `--global` if it was turned on with `--global`), which disables or removes the hook entries.
 
 The reply you're writing now (the activation turn) isn't judged.
 
@@ -118,12 +127,10 @@ You keep working while the judge runs. It doesn't block you or the user.
 
 ## How live mode works (Antigravity)
 
-`aj.mjs on --platform antigravity` registers a **Stop** hook in `<workspace>/.agents/hooks.json`. When you finish a reply:
-1. It reads your words from `lastUserInput` and your reply and tool steps from the transcript.
-2. It runs a separate `agy -p` judge in plan mode, with the packet in a file, output forced to the verdict schema, and the chosen `--model`.
-3. It gates the verdict.
-
-On HALLUCINATION the hook returns `{"decision":"continue"}` with the correction, which puts you straight back in the loop before the turn ends. On PASS it returns nothing.
+`aj.mjs on --platform antigravity` registers a **Stop** and a **PreInvocation** hook. The Stop hook reads the user's words from `lastUserInput`, and your reply and tool steps from the transcript. It then runs a separate `agy -p` judge in plan mode, with output forced to the verdict schema and the chosen `--model`, and gates the verdict.
+- **`sync`:** on HALLUCINATION, the Stop hook returns `{"decision":"continue"}` with the correction, which puts you straight back in the loop before the turn ends.
+- **`deferred`:** the Stop hook hands the turn to a detached judge and returns at once. On HALLUCINATION, PreInvocation injects the correction as a system message before your next model call. It's about your **previous** reply, so deal with it before answering the new message.
+- **No workspace:** the judge runs in an empty private folder and gets told there's no project, so it judges project claims from the trace only. Your home folder is never listed.
 
 ## How live mode works (Codex)
 

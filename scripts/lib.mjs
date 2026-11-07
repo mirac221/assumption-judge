@@ -5,13 +5,14 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 export const SKILL_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-export const VERSION = '0.3.0';
+export const VERSION = '0.4.0';
 export const MODELS = ['sonnet', 'opus', 'haiku', 'fable', 'inherit'];
 export const DEFAULTS = {
   enabled: false,
   platform: 'claude-code',
   runner: 'claude',
   model: 'sonnet',
+  mode: 'sync', // Antigravity: 'sync' (judge before the turn ends) or 'deferred' (judge in the background, deliver next turn)
   web: true,
   max_interrupts: 2,
   min_reply_chars: 12, // only skips "ok" / "noted"; short confident answers are where wrong facts hide
@@ -129,30 +130,63 @@ export function turns(entries) {
   return out;
 }
 
-/** Antigravity transcript_full.jsonl -> the last turn { prompt, reply, steps }. */
-export function agyTurn(file) {
-  const steps = [];
-  let prompt = '', reply = '';
+/** Antigravity transcript_full.jsonl -> every turn [{ prompt, reply, steps }]. */
+export function agyTurns(file) {
+  const out = [];
+  let cur = null;
   for (const s of readTranscript(file)) {
     if (s.type === 'USER_INPUT' && s.source === 'USER_EXPLICIT') {
       const c = String(s.content ?? '');
       const m = c.match(/<USER_REQUEST>\s*([\s\S]*?)\s*<\/USER_REQUEST>/);
-      prompt = (m ? m[1] : c).trim();
-      steps.length = 0;
-      reply = '';
+      cur = { prompt: (m ? m[1] : c).trim(), reply: '', steps: [] };
+      out.push(cur);
       continue;
     }
+    if (!cur) continue;
     if (s.type === 'PLANNER_RESPONSE') {
-      if (s.content && String(s.content).trim()) reply = reply ? `${reply}\n${s.content}` : String(s.content);
+      if (s.content && String(s.content).trim()) cur.reply = cur.reply ? `${cur.reply}\n${s.content}` : String(s.content);
       for (const t of s.tool_calls || []) {
-        steps.push(`CALL ${t.name} ${clip(JSON.stringify(t.args ?? {}), 400)}`);
-        reply = '';
+        cur.steps.push(`CALL ${t.name} ${clip(JSON.stringify(t.args ?? {}), 400)}`);
+        cur.reply = '';
       }
     } else if (s.content && s.type !== 'USER_INPUT') {
-      steps.push(`RESULT ${s.type}${s.status && s.status !== 'DONE' ? ` (${s.status})` : ''} ${clip(s.content, 700)}`);
+      cur.steps.push(`RESULT ${s.type}${s.status && s.status !== 'DONE' ? ` (${s.status})` : ''} ${clip(s.content, 700)}`);
     }
   }
-  return { prompt, reply, steps };
+  return out;
+}
+
+export const agyTurn = (file) => agyTurns(file).at(-1) || { prompt: '', reply: '', steps: [] };
+
+// The Antigravity app, CLI and IDE each keep conversations under their own folder.
+const AGY_ROOTS = ['antigravity', 'antigravity-cli', 'antigravity-ide'];
+const JUDGE_PACKET_START = /^#?\s*You are the assumption judge/;
+
+/**
+ * The Antigravity transcript to check: the current conversation when Antigravity tells us its id,
+ * otherwise the newest conversation in an Antigravity folder that isn't one of the judge's own runs.
+ * Never looks at another app's transcripts.
+ */
+export function findAgyTranscript(conversationId = process.env.ANTIGRAVITY_CONVERSATION_ID) {
+  const base = path.join(os.homedir(), '.gemini');
+  const file = (root, id) => path.join(base, root, 'brain', id, '.system_generated', 'logs', 'transcript_full.jsonl');
+  if (conversationId) {
+    for (const r of AGY_ROOTS) if (fs.existsSync(file(r, conversationId))) return file(r, conversationId);
+  }
+  const all = [];
+  for (const r of AGY_ROOTS) {
+    let ids = [];
+    try { ids = fs.readdirSync(path.join(base, r, 'brain')); } catch { continue; }
+    for (const id of ids) {
+      const f = file(r, id);
+      try { all.push({ f, t: fs.statSync(f).mtimeMs }); } catch {}
+    }
+  }
+  for (const { f } of all.sort((a, b) => b.t - a.t).slice(0, 20)) {
+    const first = agyTurns(f)[0];
+    if (first && !JUDGE_PACKET_START.test(first.prompt)) return f;
+  }
+  return null;
 }
 
 /** Codex rollout JSONL -> the last turn { prompt, reply, steps, model }. Tolerant of record variants. */
@@ -211,6 +245,9 @@ const SKIP_DIRS = new Set(['node_modules', '.git', '.assumption-judge', 'dist', 
 
 /** A shallow listing (2 levels, capped) so the judge knows which files could settle a claim. */
 export function projectMap(root, { depth = 2, max = 150 } = {}) {
+  // Never list a home folder or a drive root: that isn't a project, and it would leak personal file names.
+  const abs = path.resolve(root);
+  if (abs === path.resolve(os.homedir()) || abs === path.parse(abs).root) return '(not listed: this is not a project folder)';
   const lines = [];
   const walk = (dir, rel, level) => {
     let entries = [];
@@ -324,16 +361,25 @@ const AGY_TOOLS_NOTE = [
   'The tool names in the brief (Read, Grep, Glob, WebSearch) mean your equivalents.',
 ].join(' ');
 
-function runAgyJudge({ packet, model, cwd, timeoutS = 540 }) {
+function runAgyJudge(opts) {
+  const first = runAgyJudgeOnce(opts);
+  if (first.ok || !first.denied) return first;
+  // The judge reached for a shell command and headless mode killed the run. One retry, told plainly.
+  const second = runAgyJudgeOnce({ ...opts, retry: true });
+  return second.ok ? { ...second, retried: true } : { ...second, error: `${second.error} (also on retry)` };
+}
+
+function runAgyJudgeOnce({ packet, model, cwd, timeoutS = 540, retry = false }) {
+  const RETRY_NOTE = retry ? 'YOUR PREVIOUS ATTEMPT RAN A SHELL COMMAND AND WAS KILLED. Do not run any command at all this time. ' : '';
   // agy takes the prompt as an argument, and Windows caps a command line at ~32k chars.
   // Inline the packet when it fits; otherwise put it in a file the judge opens with its file viewer.
   let packetPath = null;
-  let prompt = `${packet}\n\n${AGY_TOOLS_NOTE}\nReply with the verdict JSON only, matching the schema in the brief.`;
+  let prompt = `${packet}\n\n${RETRY_NOTE}${AGY_TOOLS_NOTE}\nReply with the verdict JSON only, matching the schema in the brief.`;
   if (prompt.length > 24000) {
     ensureStateDir(cwd);
     packetPath = path.join(stateDir(cwd), `packet-${process.pid}-${Date.now()}.md`);
     fs.writeFileSync(packetPath, `${packet}\n\nReply with the verdict JSON only, matching the schema in the brief.\n`);
-    prompt = `You are the assumption judge. Open ${packetPath} with your file-viewing tool and follow it exactly. ${AGY_TOOLS_NOTE} Reply with the verdict JSON only.`;
+    prompt = `You are the assumption judge. Open ${packetPath} with your file-viewing tool and follow it exactly. ${RETRY_NOTE}${AGY_TOOLS_NOTE} Reply with the verdict JSON only.`;
   }
   const args = [
     '-p', prompt,
@@ -360,7 +406,7 @@ function runAgyJudge({ packet, model, cwd, timeoutS = 540 }) {
   const verdict = parseVerdict(out.structured_output ?? out.response);
   const meta = { ms, turns: out.num_turns, judge_model: model || 'default', runner: 'agy' };
   if (!verdict && out.denied_actions?.length) {
-    return { ok: false, ...meta, error: `the agy judge tried a tool headless mode denies (${out.denied_actions.map((d) => d.display_name || d.action).join(', ')}) and produced no verdict` };
+    return { ok: false, denied: true, ...meta, error: `the agy judge tried a tool headless mode denies (${out.denied_actions.map((d) => d.display_name || d.action).join(', ')}) and produced no verdict` };
   }
   if (out.status !== 'SUCCESS' || !verdict) return { ok: false, ...meta, error: `agy judge failed (status ${out.status}): ${clip(out.response || 'no verdict in the output', 300)}` };
   return { ok: true, verdict, ...meta };
@@ -451,6 +497,7 @@ export function interruptMessage(g, model) {
     `[assumption-judge] HALLUCINATION in your last reply (independent judge, model ${model || 'default'}).`,
     'The user has not seen this yet. Tell them plainly what was wrong, correct it, and do not repeat the claim.',
     'If you have hard evidence the judge is wrong, show the user that evidence instead of quietly ignoring this.',
+    'To double-check, open the cited file or source directly with your file-reading tool rather than a shell command.',
     '',
   ];
   for (const c of g.counted) {
