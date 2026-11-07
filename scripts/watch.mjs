@@ -56,7 +56,7 @@ export async function main(mode, projArg) {
   const model = cfg.model === 'inherit' ? (turn.model || 'inherit') : cfg.model;
 
   const packet = buildPacket({ prompt, reply, trace: traceText(turn.steps), cwd: proj, web: cfg.web });
-  const res = runJudge({ packet, model, cwd: proj, web: cfg.web, maxTurns: cfg.max_turns, timeoutS: cfg.timeout_s });
+  const res = runJudge({ runner: cfg.platform === 'claude-code' ? cfg.runner : 'claude', packet, model, cwd: proj, web: cfg.web, maxTurns: cfg.max_turns, timeoutS: cfg.timeout_s });
   const meta = { ms: res.ms, cost_usd: res.cost_usd, turns: res.turns, model };
 
   if (!res.ok) {

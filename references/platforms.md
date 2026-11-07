@@ -1,13 +1,15 @@
 # Platforms: install, live vs check mode, the model question
 
-Checked against Claude Code 2.1.316 in November 2026. These tools change fast. If anything here disagrees with your installed version's docs or `--help`, trust those, and tell the user what was different.
+Checked against Claude Code 2.1.317 and the Antigravity CLI 1.5.3 in November 2026, with live end-to-end tests on both (Windows 11). These tools change fast. If anything here disagrees with your installed version's docs or `--help`, trust those, and tell the user what was different.
 
 | Platform | Mode | Model choice | Independence |
 |---|---|---|---|
-| Claude Code (CLI, desktop app, IDE) | **Live**: parallel, interrupts only on HALLUCINATION | Yes, AskUserQuestion | Enforced: a separate process with read and search tools only |
+| Claude Code (CLI, desktop app, IDE) | **Live, in parallel**: background judge, wakes the agent only on HALLUCINATION | Yes, AskUserQuestion | Enforced: a separate process with read and search tools only |
+| Antigravity (CLI, IDE, app) | **Live, synchronous**: the Stop hook judges each reply before the turn ends | Yes, any id from `agy models` | A separate `agy -p` process in plan mode; headless mode denies shell commands |
 | Codex CLI / app | Check mode, before sending | Ask in chat | Rests on the agent's instructions |
-| Antigravity | Check mode, before sending | No, the agent file's `model:` | Rests on the agent's instructions |
 | Cursor and others | Check mode if subagents exist, otherwise the headless judge via the claude CLI | Only if the app supports it | Depends |
+
+**For every platform: the judge sees one turn.** It gets the current user message, the reply and this turn's tool trace, not the earlier conversation. Suppose you told the agent "use port 8080" three messages ago and the config says 9090. Then "8080" gets flagged as unbacked. That's usually what you want, since the config wins, but it is a known source of false alarms.
 
 ## Running only on command
 
@@ -57,7 +59,13 @@ How to invoke it:
 2. `CLAUDE_CODE_EXECPATH`, which the Claude desktop app sets to its bundled CLI
 3. `claude` on PATH
 
-**Cost.** One headless run per reply that's longer than 80 characters (`aj.mjs set min-reply-chars N`). It runs on the user's Claude plan. `aj.mjs status` adds up the API-equivalent cost that the CLI reports.
+**Live test (Claude Code 2.1.317, Haiku as judge).** The main agent was told by a system note that the port was 8080, while `config.toml` said 9090.
+- **0 s:** the agent replied "8080" and went idle.
+- **~14 s:** the judge read `config.toml`, returned `contradicted` with source `project_file`, and the async hook woke the idle agent.
+- **~20 s:** the agent told the user it was wrong and gave 9090.
+- **After that:** the correction was judged too, and got PASS.
+
+**Cost.** One headless run per reply longer than 12 characters (`aj.mjs set min-reply-chars N`). Short confident answers are where wrong facts hide, so only "ok"-style replies are skipped. It runs on the user's Claude plan. `aj.mjs status` adds up the API-equivalent cost that the CLI reports.
 
 **Model question.** Ask with AskUserQuestion: Sonnet (recommended), Opus, Haiku, or Same as me (`inherit`, meaning the model of the reply under review). Record the answer with `aj.mjs on --model …` or `aj.mjs set model …`.
 
@@ -82,14 +90,29 @@ How to invoke it:
 ## Antigravity (App, IDE, CLI)
 
 **Install**
-- **Skill:** `<workspace>/.agents/skills/assumption-judge/` or `~/.gemini/config/skills/assumption-judge/`.
-- **Agent:** copy `agents/antigravity/assumption-judge.md` to `~/.gemini/config/agents/`.
+- **Skill:** `<workspace>/.agents/skills/assumption-judge/` or `~/.gemini/config/skills/assumption-judge/`. Antigravity ignores the Claude Code `hooks:` key in SKILL.md frontmatter, and the skill shows up fine (tested).
+- **Agent** (check mode only, optional): `agents/antigravity/assumption-judge.md`. `agy agents` on CLI 1.5.3 didn't list workspace agent files, so treat this path as unverified.
 
-**Mode:** check mode, using `invoke_subagent` with the `assumption-judge` agent and the printed spawn message.
+**Live mode.** `aj.mjs on --platform antigravity --model <id>`, run from the workspace root:
+- **What it writes:**
+  - an `assumption-judge` entry in `<workspace>/.agents/hooks.json`
+  - a shim, `.agents/assumption-judge-hook.cjs`
+- **Why the shim:** Antigravity runs hook commands via `cmd /c` on Windows, and a quoted absolute path then reaches node *with the quotes in it* (seen live). So the command is a quote-free `node assumption-judge-hook.cjs`, and the shim holds the real path.
+- **Each Stop** (`terminationReason: NO_TOOL_CALL`):
+  1. The hook takes the user's words from `lastUserInput`.
+  2. It takes the reply and tool steps from `transcriptPath`: `PLANNER_RESPONSE` steps hold the text and `tool_calls`, and `GENERIC` steps hold the tool results.
+  3. It runs `agy -p <packet> --mode plan --output-format json --json-schema <schema> --model <id>`. The packet goes inline when it fits under the Windows command-line limit, and through a file otherwise.
+- **On HALLUCINATION** it returns `{"decision":"continue","reason":…}`. Antigravity injects that as a system message and the agent re-enters its loop (tested).
+- **Hooks are synchronous.** The turn pauses while the judge runs: about 80 to 120 s with Gemini 3.8 Flash Medium in testing. Pick a faster model or `--runner claude` if that's too slow.
+- **`off`** sets `"enabled": false` on the entry. It stays on across sessions until then.
+- **Recursion guard:** `ASSUMPTION_JUDGE_CHILD=1` is inherited by the judge's own agy process, so its Stop hook does nothing.
 
-**Model:** don't ask. The agent file says `model: inherit`. A user who wants a fixed tier can edit that line.
+**Model:** run `agy models` and ask in chat. `inherit` uses the session's `modelName`.
 
-**Untested:** whether Antigravity tolerates the Claude Code `hooks:` key in SKILL.md frontmatter. If the skill doesn't show up, report it and remove the key in your local copy.
+**Headless (`agy -p`) gotchas, seen live**
+- Print mode auto-denies shell commands, and a denied command ends the run with **no output at all**. The judge is told to use only its file viewer and web search; if it still tries a command, the log says so plainly.
+- The Gemini judge tended to flag unverified claims as `assumed` without opening the file that would prove them `contradicted`. The Claude judge (`--runner claude`) did open it. Both still interrupt.
+- Each judge run is its own Antigravity conversation, so it shows up in your conversation history.
 
 ## Fallback ladder (anything else)
 

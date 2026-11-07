@@ -4,9 +4,9 @@ description: Command-only. Run this skill only when the user invokes it by name 
 argument-hint: "[on|off|status|check|model <name>]"
 allowed-tools: Bash(node ${CLAUDE_SKILL_DIR}/scripts/aj.mjs *)
 license: Apache-2.0
-compatibility: Live parallel mode needs Claude Code (CLI, desktop app or IDE) with Node 18+ and the claude CLI. Codex, Antigravity, Cursor and other agent apps with a shell get check mode (a judge subagent per reply). Not for chat-only uploads such as claude.ai skills.
+compatibility: Needs Node 18+. Live mode runs on Claude Code (CLI, desktop app or IDE; in parallel, via the claude CLI) and Antigravity (a synchronous Stop hook, via the agy CLI). Codex, Cursor and other agent apps with a shell get check mode (a judge subagent per reply). Not for chat-only uploads such as claude.ai skills.
 metadata:
-  version: "0.1.0"
+  version: "0.2.0"
 hooks:
   UserPromptSubmit:
     - hooks:
@@ -59,26 +59,39 @@ Skip this if the user already named a model, or `.assumption-judge/config.json` 
   - `Opus`: strictest, catches subtle errors, most quota
   - `Haiku`: cheapest and fastest, but misses subtle errors and is more likely to raise false alarms
   - `Same as me`: the model that wrote the reply (`inherit`)
-- **Codex:** ask in chat. **Antigravity:** don't ask; the judge runs on its agent file's model, so tell the user that.
+- **Antigravity:** run `agy models` and ask in chat which one the judge should use, or "same as me" (`inherit`). Recommend a stronger model than the cheapest flash tier.
+- **Codex:** ask in chat.
 - **Anything else:** ask only if you can actually choose a subagent's model there.
 
 Be straight about cost: one judge run per reply, each with possible web searches, on the user's plan.
 
 ### 2. Switch it on
 
+Claude Code:
 ```bash
 node <skill>/scripts/aj.mjs on --model sonnet
 ```
+Models: `sonnet`, `opus`, `haiku`, `fable`, `inherit`, or a full `claude-*` id.
 
-Models: `sonnet`, `opus`, `haiku`, `fable`, `inherit`, or a full `claude-*` id. Other options: `--max-interrupts N` (default 2 per user message) and `--no-web`.
+Antigravity (run it from the workspace root):
+```bash
+node <skill>/scripts/aj.mjs on --platform antigravity --model <id from agy models>
+```
+This adds an `assumption-judge` entry to `<workspace>/.agents/hooks.json`. Tell the user it did. `--runner claude` uses the claude CLI as the judge instead of `agy`.
 
-If it prints a warning that the claude CLI wasn't found, live mode can't run. Tell the user, and use check mode (below).
+Options for both: `--max-interrupts N` (default 2 per user message) and `--no-web`.
+
+If it prints a warning that the judge's CLI wasn't found, live mode can't run. Tell the user, and use check mode (below).
 
 ### 3. Tell the user, in two or three lines
 
 - It's on, with the model they chose.
-- From their **next** message on, every reply gets judged in the background, and you'll only be interrupted on a HALLUCINATION.
-- `/assumption-judge off` stops it. It also stops when the session ends; invoke it again in a new session to re-arm it.
+- From their **next** message on, every reply gets judged, and you'll only be interrupted on a HALLUCINATION.
+  - Claude Code: the judge runs in the background, in parallel.
+  - Antigravity: hooks are synchronous, so each reply pauses for about 10 to 60 seconds while the judge runs.
+- `/assumption-judge off` stops it.
+  - Claude Code: it also stops when the session ends, so invoke it again in a new session.
+  - Antigravity: it stays on for the workspace until `off`.
 
 The reply you're writing now (the activation turn) isn't judged.
 
@@ -97,6 +110,15 @@ Invoking this skill registers two hooks for the rest of the session:
 
 You keep working while the judge runs. It doesn't block you or the user.
 
+## How live mode works (Antigravity)
+
+`aj.mjs on --platform antigravity` registers a **Stop** hook in `<workspace>/.agents/hooks.json`. When you finish a reply:
+1. It reads your words from `lastUserInput` and your reply and tool steps from the transcript.
+2. It runs a separate `agy -p` judge in plan mode, with the packet in a file, output forced to the verdict schema, and the chosen `--model`.
+3. It gates the verdict.
+
+On HALLUCINATION the hook returns `{"decision":"continue"}` with the correction, which puts you straight back in the loop before the turn ends. On PASS it returns nothing.
+
 ## When the judge interrupts you
 
 You'll get a system message starting with `[assumption-judge] HALLUCINATION`. Then:
@@ -109,9 +131,9 @@ You'll get a system message starting with `[assumption-judge] HALLUCINATION`. Th
 
 If you get `[assumption-judge] The judge could not run`, tell the user once. The reply wasn't checked.
 
-## Check mode (other platforms, or no claude CLI)
+## Check mode (Codex, Cursor, others, or no judge CLI)
 
-Without Claude Code hooks, nothing can run in parallel, so the check happens **before** you send instead:
+Without hooks, nothing can run on its own, so the check happens **before** you send instead:
 
 1. Write your draft reply to a file, and the user's message, verbatim, to another. Optionally write the tool calls and results you relied on to a third.
 2. Build the packet:
@@ -147,6 +169,7 @@ Everything else is logged in `.assumption-judge/log.jsonl` and never interrupts.
 |---|---|
 | `scripts/aj.mjs` | Commands: on, off, status, set, check, packet, gate |
 | `scripts/watch.mjs` | The hook handler for Claude Code live mode |
+| `scripts/agy-hook.mjs` | The Stop hook handler for Antigravity live mode |
 | `scripts/lib.mjs` | Transcript parsing, packet, headless judge runner, gate |
 | [references/judge-brief.md](references/judge-brief.md) | The judge's instructions. Don't edit them to go easier on yourself. |
 | [references/verdict.schema.json](references/verdict.schema.json) | The verdict format, enforced with `--json-schema` |

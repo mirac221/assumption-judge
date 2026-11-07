@@ -5,14 +5,16 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 export const SKILL_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-export const VERSION = '0.1.0';
+export const VERSION = '0.2.0';
 export const MODELS = ['sonnet', 'opus', 'haiku', 'fable', 'inherit'];
 export const DEFAULTS = {
   enabled: false,
+  platform: 'claude-code',
+  runner: 'claude',
   model: 'sonnet',
   web: true,
   max_interrupts: 2,
-  min_reply_chars: 80,
+  min_reply_chars: 12, // only skips "ok" / "noted"; short confident answers are where wrong facts hide
   max_turns: 25,
   timeout_s: 540,
 };
@@ -43,9 +45,12 @@ export function ensureStateDir(proj) {
 
 export const loadConfig = (proj) => ({ ...DEFAULTS, ...readJSON(path.join(stateDir(proj), 'config.json'), {}) });
 
+/** Saves only what differs from DEFAULTS, so a later version's defaults aren't frozen into old configs. */
 export function saveConfig(proj, cfg) {
   ensureStateDir(proj);
-  writeJSON(path.join(stateDir(proj), 'config.json'), cfg);
+  const out = {};
+  for (const [k, v] of Object.entries(cfg)) if (k === 'enabled' || DEFAULTS[k] !== v) out[k] = v;
+  writeJSON(path.join(stateDir(proj), 'config.json'), out);
 }
 
 export const sessionFile = (proj, id) =>
@@ -124,7 +129,33 @@ export function turns(entries) {
   return out;
 }
 
-export const isJudgeCommand = (text) => /(^|[\s>])\/?assumption-judge(:assumption-judge)?\b/.test(String(text).slice(0, 300));
+/** Antigravity transcript_full.jsonl -> the last turn { prompt, reply, steps }. */
+export function agyTurn(file) {
+  const steps = [];
+  let prompt = '', reply = '';
+  for (const s of readTranscript(file)) {
+    if (s.type === 'USER_INPUT' && s.source === 'USER_EXPLICIT') {
+      const c = String(s.content ?? '');
+      const m = c.match(/<USER_REQUEST>\s*([\s\S]*?)\s*<\/USER_REQUEST>/);
+      prompt = (m ? m[1] : c).trim();
+      steps.length = 0;
+      reply = '';
+      continue;
+    }
+    if (s.type === 'PLANNER_RESPONSE') {
+      if (s.content && String(s.content).trim()) reply = reply ? `${reply}\n${s.content}` : String(s.content);
+      for (const t of s.tool_calls || []) {
+        steps.push(`CALL ${t.name} ${clip(JSON.stringify(t.args ?? {}), 400)}`);
+        reply = '';
+      }
+    } else if (s.content && s.type !== 'USER_INPUT') {
+      steps.push(`RESULT ${s.type}${s.status && s.status !== 'DONE' ? ` (${s.status})` : ''} ${clip(s.content, 700)}`);
+    }
+  }
+  return { prompt, reply, steps };
+}
+
+export const isJudgeCommand =(text) => /(^|[\s>])\/?assumption-judge(:assumption-judge)?\b/.test(String(text).slice(0, 300));
 
 export function traceText(steps, budget = 14000) {
   const all = steps.join('\n');
@@ -186,8 +217,63 @@ function parseVerdict(text) {
   return null;
 }
 
-/** Runs the judge as a separate headless Claude Code process. Never throws. */
-export function runJudge({ packet, model, cwd, web = true, maxTurns = 25, timeoutS = 540 }) {
+export const agyBin = () => process.env.ASSUMPTION_JUDGE_AGY || 'agy';
+
+/** Runs the judge as a separate process: the claude CLI (default) or Antigravity's agy CLI. Never throws. */
+export function runJudge(opts) {
+  return opts.runner === 'agy' ? runAgyJudge(opts) : runClaudeJudge(opts);
+}
+
+// Headless agy auto-denies shell commands, and a denied command ends the run with no output at all.
+const AGY_TOOLS_NOTE = [
+  'Tools for this job: read project files ONLY with your file-viewing / file-search tools, and use web search for facts.',
+  'You have NO shell: never run a command (no cat, type, ls, grep in a terminal). A command would be denied and your verdict lost.',
+  'The tool names in the brief (Read, Grep, Glob, WebSearch) mean your equivalents.',
+].join(' ');
+
+function runAgyJudge({ packet, model, cwd, timeoutS = 540 }) {
+  // agy takes the prompt as an argument, and Windows caps a command line at ~32k chars.
+  // Inline the packet when it fits; otherwise put it in a file the judge opens with its file viewer.
+  let packetPath = null;
+  let prompt = `${packet}\n\n${AGY_TOOLS_NOTE}\nReply with the verdict JSON only, matching the schema in the brief.`;
+  if (prompt.length > 24000) {
+    ensureStateDir(cwd);
+    packetPath = path.join(stateDir(cwd), `packet-${process.pid}-${Date.now()}.md`);
+    fs.writeFileSync(packetPath, `${packet}\n\nReply with the verdict JSON only, matching the schema in the brief.\n`);
+    prompt = `You are the assumption judge. Open ${packetPath} with your file-viewing tool and follow it exactly. ${AGY_TOOLS_NOTE} Reply with the verdict JSON only.`;
+  }
+  const args = [
+    '-p', prompt,
+    ...(model && model !== 'inherit' ? ['--model', model] : []),
+    '--mode', 'plan',
+    '--output-format', 'json',
+    '--json-schema', path.join(SKILL_DIR, 'references', 'verdict.schema.json'),
+    '--print-timeout', `${timeoutS}s`,
+  ];
+  const started = Date.now();
+  const run = spawnSync(agyBin(), args, {
+    cwd, encoding: 'utf8', maxBuffer: 1 << 28, timeout: (timeoutS + 30) * 1000, windowsHide: true,
+    env: { ...process.env, ASSUMPTION_JUDGE_CHILD: '1' },
+  });
+  const ms = Date.now() - started;
+  if (packetPath) { try { fs.rmSync(packetPath, { force: true }); } catch {} }
+  if (process.env.ASSUMPTION_JUDGE_DEBUG) {
+    try { fs.writeFileSync(path.join(stateDir(cwd), 'last-judge.json'), JSON.stringify({ bin: agyBin(), args, stdout: run.stdout, stderr: run.stderr, status: run.status }, null, 1)); } catch {}
+  }
+  if (run.error) return { ok: false, ms, error: run.error.code === 'ENOENT' ? 'agy CLI not found (set ASSUMPTION_JUDGE_AGY to its path)' : run.error.message };
+  let out = null;
+  try { out = JSON.parse(run.stdout); } catch {}
+  if (!out) return { ok: false, ms, error: `no JSON from agy (exit ${run.status}): ${clip((run.stderr || run.stdout || '').trim(), 300)}` };
+  const verdict = parseVerdict(out.structured_output ?? out.response);
+  const meta = { ms, turns: out.num_turns, judge_model: model || 'default', runner: 'agy' };
+  if (!verdict && out.denied_actions?.length) {
+    return { ok: false, ...meta, error: `the agy judge tried a tool headless mode denies (${out.denied_actions.map((d) => d.display_name || d.action).join(', ')}) and produced no verdict` };
+  }
+  if (out.status !== 'SUCCESS' || !verdict) return { ok: false, ...meta, error: `agy judge failed (status ${out.status}): ${clip(out.response || 'no verdict in the output', 300)}` };
+  return { ok: true, verdict, ...meta };
+}
+
+function runClaudeJudge({ packet, model, cwd, web = true, maxTurns = 25, timeoutS = 540 }) {
   const tools = ['Read', 'Grep', 'Glob', ...(web ? ['WebSearch', 'WebFetch'] : [])].join(',');
   const schema = JSON.stringify(readJSON(path.join(SKILL_DIR, 'references', 'verdict.schema.json')));
   const args = [
