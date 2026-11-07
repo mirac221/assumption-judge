@@ -1,0 +1,5 @@
+interface:
+  display_name: "assumption-judge"
+  short_description: "An independent judge fact-checks every reply and interrupts only on hallucinations"
+policy:
+  allow_implicit_invocation: false

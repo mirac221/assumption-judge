@@ -1,0 +1,27 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["claims", "checked", "verdict", "summary"],
+  "properties": {
+    "claims": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["quote", "status", "severity", "confidence", "source", "evidence", "correction"],
+        "properties": {
+          "quote": { "type": "string" },
+          "status": { "type": "string", "enum": ["contradicted", "assumed", "misread_request", "unverifiable"] },
+          "severity": { "type": "string", "enum": ["major", "minor"] },
+          "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+          "source": { "type": "string", "enum": ["web", "project_file", "transcript", "user_message", "knowledge"] },
+          "evidence": { "type": "string" },
+          "correction": { "type": "string" }
+        }
+      }
+    },
+    "checked": { "type": "integer", "minimum": 0 },
+    "verdict": { "type": "string", "enum": ["PASS", "HALLUCINATION"] },
+    "summary": { "type": "string" }
+  }
+}

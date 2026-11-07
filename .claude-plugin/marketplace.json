@@ -1,0 +1,12 @@
+{
+  "name": "assumption-judge",
+  "description": "assumption-judge: an independent judge catches your agent's hallucinations and assumptions while it works.",
+  "owner": { "name": "mirac221", "url": "https://github.com/mirac221" },
+  "plugins": [
+    {
+      "name": "assumption-judge",
+      "source": "./",
+      "description": "Parallel fact-checking judge with web search that interrupts the main agent only on HALLUCINATION."
+    }
+  ]
+}
