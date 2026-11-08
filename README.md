@@ -211,6 +211,8 @@ agents/                    judge agents for check mode (Claude Code, Cursor, Cod
 
 </details>
 
+**Also by me:** [frame-judge](https://github.com/mirac221/frame-judge), a code-blind critic that checks every ask in your request against the rendered frames of AI-built UI, animation and video.
+
 ## License
 
 [Apache-2.0](LICENSE) © 2026 mirac221. Use it, change it, ship it. When you share it, keep the [LICENSE](LICENSE) and [NOTICE](NOTICE) files so the credit stays with the original work.
