@@ -5,7 +5,7 @@
 import fs from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import {
-  appendLog, isManagementTurn, buildPacket, clip, gate, interruptMessage, isJudgeCommand, loadConfig, readJSON,
+  appendLog, earlierText, isManagementTurn, buildPacket, clip, gate, interruptMessage, isJudgeCommand, loadConfig, readJSON,
   readStdin, readTranscript, runJudge, sessionFile, traceText, turns, writeJSON,
 } from './lib.mjs';
 
@@ -55,7 +55,7 @@ export async function main(mode, projArg) {
   if (isJudgeCommand(prompt) || isManagementTurn(turn.steps)) return;
   const model = cfg.model === 'inherit' ? (turn.model || 'inherit') : cfg.model;
 
-  const packet = buildPacket({ prompt, reply, trace: traceText(turn.steps), cwd: proj, web: cfg.web });
+  const packet = buildPacket({ prompt, reply, trace: traceText(turn.steps), cwd: proj, web: cfg.web, earlier: earlierText(all, cfg.context_turns) });
   const res = runJudge({ runner: cfg.platform === 'claude-code' ? cfg.runner : 'claude', packet, model, cwd: proj, web: cfg.web, maxTurns: cfg.max_turns, timeoutS: cfg.timeout_s });
   const meta = { ms: res.ms, cost_usd: res.cost_usd, turns: res.turns, model };
 

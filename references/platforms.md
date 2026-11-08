@@ -1,15 +1,22 @@
 # Platforms: install, live vs check mode, the model question
 
-Checked against Claude Code 2.1.317 and the Antigravity CLI 1.5.3 in November 2026, with live end-to-end tests on both (Windows 11). These tools change fast. If anything here disagrees with your installed version's docs or `--help`, trust those, and tell the user what was different.
+Checked against Claude Code 2.1.317 and the Antigravity CLI 1.5.3 in November 2026, with live end-to-end tests on both (Windows 11), and against the Cursor and Codex docs of the same month.
+
+## Contents
+- The table below, and "Running only on command"
+- Claude Code · Codex live mode · Codex check mode · Antigravity · Cursor · Claude app · ChatGPT app · Chat apps: relay mode · Fallback ladder These tools change fast. If anything here disagrees with your installed version's docs or `--help`, trust those, and tell the user what was different.
 
 | Platform | Mode | Model choice | Independence |
 |---|---|---|---|
 | Claude Code (CLI, desktop app, IDE) | **Live, in parallel**: background judge, wakes the agent only on HALLUCINATION | Yes, AskUserQuestion | Enforced: a separate process with read and search tools only |
 | Antigravity (app, CLI, IDE) | **Live**, `sync` (judged before the turn ends) or `deferred` (no pause, a catch is raised next message); workspace or `--global` | Yes, any id from `agy models`, including Antigravity's Claude Sonnet / Opus | A separate `agy -p` process in plan mode; headless mode denies shell commands |
 | Codex CLI / app | **Live, synchronous** (project hooks, after `/hooks` trust); check mode as fallback | Ask in chat | A separate `codex exec` in a read-only sandbox, or the claude CLI. **Hook plumbing simulated, not run inside Codex** (see below) |
-| Cursor and others | Check mode if subagents exist, otherwise the headless judge via the claude CLI | Only if the app supports it | Depends |
+| Cursor (IDE and CLI) | **Live, synchronous** (`stop` hook, a catch comes back as a follow-up message); check mode as fallback | Ask in chat | A separate `claude -p` (read and search tools only) or `agent -p --mode ask` (read-only). **Hook plumbing simulated, not run inside Cursor** |
+| ChatGPT desktop app, Codex mode | Same as Codex | Ask in chat | Same as Codex |
+| Claude Cowork | Live via the plugin's hooks (untested), otherwise check mode with a subagent | Ask in chat | Subagent |
+| claude.ai chat, ChatGPT Chat / Work | **Relay**, or check mode with a fresh subagent where the app has one (ChatGPT Work) | Only where a subagent's model can be chosen | A fresh chat or subagent |
 
-**For every platform: the judge sees one turn.** It gets the current user message, the reply and this turn's tool trace, not the earlier conversation. Suppose you told the agent "use port 8080" three messages ago and the config says 9090. Then "8080" gets flagged as unbacked. That's usually what you want, since the config wins, but it is a known source of false alarms.
+**For every platform: the judge sees one turn, plus the user's earlier words.** It gets the current user message, the reply and this turn's tool trace, and the user's last 3 messages before this one (`aj.mjs set context-turns N`, 0 turns it off). So if you told the agent "use port 7000 from now on" two messages ago, a reply that relies on 7000 passes, even though the config still says 9090. A reply claiming the *config* says 7000 still gets flagged. The assistant's own earlier answers are shown, marked as not evidence.
 
 ## Running only on command
 
@@ -19,8 +26,9 @@ assumption-judge is command-only. In ordinary chats it costs only its descriptio
 - **Don't add `disable-model-invocation: true`.** Antigravity then hides the skill completely, as it does for frame-judge.
 
 How to invoke it:
-- Claude Code, Cursor, Antigravity: `/assumption-judge`; as a Claude Code plugin, `/assumption-judge:assumption-judge`
-- Codex: `$assumption-judge`
+- Claude Code, Cursor (IDE and CLI), Antigravity: `/assumption-judge`; as a Claude Code plugin, `/assumption-judge:assumption-judge`
+- Codex and the ChatGPT desktop app's Codex mode: `$assumption-judge`
+- ChatGPT Chat and Work: `@assumption-judge`
 - anywhere else: "use assumption-judge"
 
 ## Claude Code
@@ -173,6 +181,64 @@ Sonnet is the recommendation.
 - The *main* agent, once corrected, sometimes reaches for `ls` to double-check. Print mode denies that; the app asks you. The correction message suggests opening the cited file directly.
 - Without a file map, the Gemini judge flagged unverified claims as `assumed` instead of opening the file that proves them wrong. The packet now lists the project files, and the brief says to open the one that settles a claim before settling for `assumed`. After that, Gemini returned `contradicted` with source `project_file` in 2 out of 2 runs.
 - Each `agy` judge run is its own Antigravity conversation, so it shows up in your conversation history. agy has no "don't save" flag. `--runner claude` avoids it if the claude CLI is installed. `check` skips those judge conversations when it looks for yours.
+
+## Cursor (IDE and Cursor CLI)
+
+Built from Cursor's hooks, skills and CLI docs (cursor.com/docs, November 2026). The hook plumbing was **simulated** end to end with the documented payloads and a real judge (below). It was not run inside Cursor, since Cursor isn't installed on the test machine.
+
+**Install**
+- **Skill:** Cursor reads `~/.cursor/skills/`, `~/.agents/skills/`, `~/.claude/skills/` and `~/.codex/skills/` (plus the same folders in a project). If the skill is already installed for Claude Code or Codex, Cursor uses that copy. `node scripts/install.mjs` handles this.
+- **Judge agent** (check mode only): `agents/cursor/assumption-judge.md` goes to `~/.cursor/agents/`. It sets `readonly: true`. Cursor also reads `~/.claude/agents/` and `~/.codex/agents/`, and `.cursor/` wins on a name clash.
+- **Invoke:** `/assumption-judge` in Agent chat or the Cursor CLI.
+
+**Model question:** ask in chat. Two cases:
+- The judge runs on the **claude CLI** (the default when it's installed): Sonnet (recommended), Opus, Haiku.
+- The judge runs on the **Cursor CLI** (`--runner cursor`): any id from `agent --list-models`, or "same as me" (`inherit`, the `model` Cursor sends to the hook).
+
+**Turn it on** (from the project root):
+```bash
+node <skill>/scripts/aj.mjs on --platform cursor --model sonnet
+```
+- **What it writes:** three entries in `<project>/.cursor/hooks.json` (or `~/.cursor/hooks.json` with `--global`). Ours are recognised by the `cursor-hook.mjs` path; anything else in the file stays.
+  - `beforeSubmitPrompt`: stores the user's words. It always answers `{"continue": true}`, so it never blocks a prompt.
+  - `afterAgentResponse`: stores the agent's final text.
+  - `stop`: on `status: "completed"`, judges the reply synchronously. On HALLUCINATION it returns `{"followup_message": …}`, which Cursor submits as the next message. The agent then tells the user and corrects itself.
+- **Loops:** our cap (2 per user message) plus `loop_limit: 3` on the stop hook. Our own follow-up message is recognised by its `[assumption-judge]` prefix: it doesn't count as the user's words, and doesn't reset the count.
+- **Context:** the judge gets the trace and the earlier user messages from `transcript_path` when Cursor writes transcripts, and otherwise from what the hooks recorded. With no trace, the judge is told that a missing tool call is not evidence.
+- **Global scope:** a project with its own entry wins, and the global hook stands down, so nothing runs twice.
+- **`off`** removes our three entries.
+
+**Judge runners**
+- `claude` (default when installed): `claude -p` with Read, Grep, Glob, WebSearch and WebFetch only. Strictest isolation.
+- `cursor`: `agent -p --mode ask --output-format json --trust --workspace <project>`. Ask mode is read-only. The packet goes through a file, because Windows caps a command line at about 32k characters. Untested: whether ask mode gets web search in headless runs. If it doesn't, the judge marks web-only facts `unverifiable` and nothing false gets through.
+- `agy` also works if Antigravity is installed.
+
+**Simulated test** (Windows 11, November 2026). The documented payloads were piped into the exact `hooks.json` commands, with the agy runner and `claude-sonnet-4-6` as judge, against a fixture where `config.toml` says `port = 9090`:
+- `beforeSubmitPrompt` → `{"continue":true}`; `afterAgentResponse` → `{}`
+- a short "Got it." turn was skipped
+- a reply claiming "Per config.toml the server listens on port 8080" got `{"followup_message": …}` in 21.6 s, citing `config.toml line 3: port = 9090`
+
+**Known Cursor issue:** a forum report (2026) says that on Windows, some Cursor builds ignore a stop hook's `followup_message`. If a catch never reaches the agent, `aj.mjs status` still shows it, and check mode is the fallback.
+
+## Claude app (desktop and claude.ai)
+
+- **Code tab of the Claude desktop app:** that's Claude Code. Use the Claude Code section.
+- **Cowork:** Cowork plugins use the Claude Code plugin format, and Anthropic's docs say hooks and subagents run there (not in chat). Install the plugin (`/plugin marketplace add mirac221/assumption-judge`). Not tested in Cowork. If the hooks don't fire there, use check mode: Cowork has subagents.
+- **claude.ai chat** (web, desktop or mobile chat): no hooks, no subagents, no local CLI. Upload the zip from `node scripts/install.mjs --zip` (Settings > Capabilities > code execution on, then Skills > Upload). It then runs in **relay mode**, below.
+
+## ChatGPT app
+
+- **Codex mode in the ChatGPT desktop app** (the former Codex app, merged into ChatGPT in July 2026): same skills folder (`~/.agents/skills/`), same hooks, same `$assumption-judge`. Use the Codex section. Codex hooks run in the desktop app after you review them (Settings > Hooks).
+- **ChatGPT Work:** skills load from uploads, and Work can run subagents in its hosted environment. Plugin hooks don't run in cloud-orchestrated Work. Use check mode with a fresh subagent: the packet and gate scripts run wherever the skill's scripts can run. If they can't, use relay mode.
+- **ChatGPT Chat:** upload the zip (Skills > Create > Upload from your computer) and invoke it with `@assumption-judge`. Relay mode.
+
+## Chat apps: relay mode
+
+For any app with no hooks and no way to start an independent agent:
+1. Build the packet as in check mode (`aj.mjs packet …`) if scripts can run. If they can't, write the packet by hand: the full text of `references/judge-brief.md`, then the USER, REPLY and TRACE blocks exactly as in `buildPacket`.
+2. Hand the packet to the user. They paste it into a **fresh chat** (any model with web search), then paste the JSON reply back.
+3. Gate it with `aj.mjs gate --verdict` if scripts can run. Otherwise apply the gate rules from SKILL.md yourself, and say you did.
+4. Never play the judge yourself and call it independent. If the user doesn't want to relay, say plainly that this reply wasn't independently checked.
 
 ## Fallback ladder (anything else)
 

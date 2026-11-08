@@ -1,0 +1,12 @@
+{
+  "name": "shopapi",
+  "version": "2.4.1",
+  "type": "module",
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js",
+    "test": "node --test"
+  },
+  "dependencies": { "express": "^5.1.0" }
+}

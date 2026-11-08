@@ -7,7 +7,7 @@
 import fs from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import {
-  appendLog, isManagementTurn, buildPacket, clip, codexTurn, gate, interruptMessage, isJudgeCommand, loadConfig, readJSON,
+  appendLog, earlierText, isManagementTurn, buildPacket, clip, codexTurns, gate, interruptMessage, isJudgeCommand, loadConfig, readJSON,
   readStdin, runJudge, sessionFile, traceText, writeJSON,
 } from './lib.mjs';
 
@@ -33,7 +33,8 @@ export async function main(mode) {
   }
   if (mode !== 'stop') return;
 
-  const turn = codexTurn(input.transcript_path);
+  const all = codexTurns(input.transcript_path);
+  const turn = all.at(-1) || { prompt: '', reply: '', steps: [], model: '' };
   const prompt = String(st.prompt || turn.prompt || '').trim();
   const reply = String(input.last_assistant_message ?? turn.reply ?? '').trim();
   if (!prompt || isJudgeCommand(prompt) || isManagementTurn(turn.steps)) return; // activation turn, or nothing to judge against
@@ -45,7 +46,7 @@ export async function main(mode) {
   }
 
   const model = cfg.model === 'inherit' ? (input.model || turn.model || 'inherit') : cfg.model;
-  const packet = buildPacket({ prompt, reply, trace: traceText(turn.steps), cwd: proj, web: cfg.web });
+  const packet = buildPacket({ prompt, reply, trace: traceText(turn.steps), cwd: proj, web: cfg.web, earlier: earlierText(all, cfg.context_turns) });
   const res = runJudge({ runner: cfg.runner, packet, model, cwd: proj, web: cfg.web, maxTurns: cfg.max_turns, timeoutS: cfg.timeout_s });
   const meta = { ms: res.ms, cost_usd: res.cost_usd, turns: res.turns, model, runner: cfg.runner };
 

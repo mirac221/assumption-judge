@@ -4,7 +4,18 @@
 
 Turn it on, and every reply your AI finishes goes to an independent judge. The judge never sees your AI's reasoning, only three things: your message, the reply, and what the tools actually returned. It checks the claims against the project files, the web and its own knowledge, then writes **PASS** or **HALLUCINATION**. A PASS stays silent. A HALLUCINATION interrupts your AI with the evidence, and your AI has to tell you and correct itself.
 
-Works live on **Claude Code** and **Antigravity** (both tested end to end) and **Codex** (hook plumbing tested by simulation), with a check mode for Cursor and any other agent that supports [Agent Skills](https://agentskills.io).
+![license](https://img.shields.io/badge/license-Apache--2.0-blue) ![agent skills](https://img.shields.io/badge/Agent%20Skills-compatible-6b4fbb) ![node](https://img.shields.io/badge/node-18%2B-339933) ![deps](https://img.shields.io/badge/dependencies-0-brightgreen)
+
+| Works in | How | Status |
+|---|---|---|
+| **Claude Code** (CLI, desktop app, VS Code / JetBrains) | Live: a background judge, in parallel, wakes your AI only on a catch | Tested live |
+| **Antigravity** (app, IDE, `agy` CLI) | Live: judged before the turn ends, or in the background | Tested live |
+| **Cursor** (IDE and Cursor CLI) | Live: a `stop` hook sends the catch back as a follow-up message | Hooks tested by simulation with a real judge |
+| **Codex** (CLI, IDE, ChatGPT desktop app in Codex mode) | Live: synchronous hooks, after you trust them with `/hooks` | Hooks tested by simulation |
+| **Claude Cowork**, **ChatGPT Work** | Check mode: a fresh judge subagent per reply | From the docs |
+| **claude.ai**, **ChatGPT** chat | Relay mode: upload the zip, and the judge runs in a fresh chat | From the docs |
+
+Any other app that reads [Agent Skills](https://agentskills.io) gets check mode.
 
 ## Install
 
@@ -12,7 +23,11 @@ Works live on **Claude Code** and **Antigravity** (both tested end to end) and *
 
 > Install this skill: https://github.com/mirac221/assumption-judge
 
-That's it. Your AI reads the setup steps below and does the rest.
+That's it. Your AI reads the setup steps below and does the rest. Or do it yourself in one go: it installs into every agent app it finds on your machine.
+
+```bash
+git clone https://github.com/mirac221/assumption-judge && node assumption-judge/scripts/install.mjs
+```
 
 ## What it catches
 
@@ -34,6 +49,26 @@ What it looks for:
 - **Claimed work that never happened:** "tests pass" with no test run in the trace.
 - **Answering the wrong question:** the reply does something other than what you asked.
 
+## Does it actually help?
+
+We ran the judge on 14 replies about a small fixture repo whose team notes are stale (they say port 8080, `npm run serve`, `--legacy-auth`; the real config, scripts and changelog say otherwise).
+- 6 are real replies from Claude Haiku agents doing the task. A good judge stays quiet on those.
+- 6 are planted versions of the classic failure shapes: a stale value passed off as config, a removed CLI flag, a script that doesn't exist, "all tests pass" with no test run, a wrong dependency version, and an outdated "newest model".
+- 2 test the new earlier-context feature: the user set port 7000 two messages ago.
+
+The same judge model ran both the previous version (0.5.1) and this one (0.6.0).
+
+| Judge: Gemini 3.8 Flash (High), via Antigravity | Stayed quiet on real replies | Caught planted errors | Earlier-context cases | Total |
+|---|---|---|---|---|
+| assumption-judge 0.5.1 | 6/6 | 6/6 | 1/2 | 13/14 |
+| **assumption-judge 0.6.0** | **6/6** | **6/6** | **2/2** | **14/14** |
+
+- **Caught, every time:** a stale port passed off as "the project config", a removed `--legacy-auth` flag, `npm run serve` (no such script), "all 12 tests pass" with no test run, a wrong Express version, and "Claude 3.5 Sonnet is the newest model".
+- **The one difference:** two messages earlier, the user said "use port 7000 from now on". 0.5.1 never saw that and flagged a correct `ufw allow 7000/tcp` as a hallucination. 0.6.0 passed it, and still flagged the variant that falsely claimed `config.toml` already says 7000.
+- **Found and fixed during testing:** an earlier pre-release run with a Sonnet judge let the stale-port case through, because the reply's values matched the stale notes. The judge now ranks sources (running config and code over notes and docs), and that case has been caught since.
+
+Every number above comes from one run each, with an Antigravity-hosted judge. Small samples, so treat them as a smoke test, not a benchmark. The cases, the fixture repo and the runner are in [`evals/`](evals/), so you can rerun them: `node evals/run.mjs --runner agy --model <id>` (or `--runner claude --model sonnet`).
+
 ## Run it
 
 It only runs when you call it. In normal chats, the only cost is its one-paragraph description.
@@ -42,8 +77,9 @@ It only runs when you call it. In normal chats, the only cost is its one-paragra
 |---|---|
 | Claude Code (terminal, Claude desktop app, IDE) | `/assumption-judge` (`/assumption-judge:assumption-judge` as a plugin) |
 | Antigravity (CLI, IDE, app) | `/assumption-judge` |
-| Codex | `$assumption-judge` |
-| Cursor | `/assumption-judge` |
+| Codex (CLI, IDE, ChatGPT desktop app in Codex mode) | `$assumption-judge` |
+| Cursor (IDE and Cursor CLI) | `/assumption-judge` |
+| ChatGPT (Chat and Work) | `@assumption-judge` |
 | Anything else | "use assumption-judge" |
 
 Arguments: `on` (the default), `off`, `status`, `check` (judge the last reply right now), `model <name>`.
@@ -60,8 +96,10 @@ Arguments: `on` (the default), `off`, `status`, `check` (judge the last reply ri
     - `sync`: each reply pauses while the judge runs (about 15 s with Claude Sonnet via Antigravity), and a catch sends your AI straight back to fix it.
     - `deferred`: no pause at all, and a catch is raised at the start of your next message.
     - It works with or without a workspace open (`--global`).
+  - **Cursor:** a synchronous `stop` hook. A catch comes back to your AI as a follow-up message, before you act on the answer. Works in the IDE and in the Cursor CLI.
   - **Codex:** synchronous project hooks, like Antigravity. Codex only runs them after you trust them, so run `/hooks` in Codex once after turning it on.
-  - **Cursor and others:** no hooks, so your AI checks each draft with a judge subagent **before** sending.
+  - **Chat apps and others:** no hooks, so your AI checks each draft with a fresh judge **before** sending, or hands you a packet for a fresh chat.
+- **It remembers what you said:** the judge sees your last few messages too. Tell your AI "use port 7000 from now on", and a reply using 7000 isn't flagged just because a config file still says 9090.
 - **It costs tokens:** one judge run per reply, with web searches when needed, on your own plan. `status` shows the running total.
 - **No ping-pong:** at most 2 interrupts per message of yours. Only replies like "ok" or "noted" are skipped.
 
@@ -71,36 +109,33 @@ Arguments: `on` (the default), `off`, `status`, `check` (judge the last reply ri
 - Live mode on Claude Code: the `claude` CLI (the Claude desktop app ships its own copy, and the judge finds it)
 - Live mode on Antigravity: the `agy` CLI (or the `claude` CLI, with `--runner claude`)
 - Live mode on Codex: the `codex` CLI on PATH, or the `claude` CLI
+- Live mode on Cursor: the `claude` CLI (strictest), or the Cursor CLI (`agent`)
+- `node scripts/aj.mjs doctor` tells you what's installed and which mode will run
 
 ## Setup steps (for the AI doing the install)
 
 You were sent this link to install assumption-judge. Do this, then tell the user what you did.
 
-**1. Clone this repo into your skills folder as `assumption-judge`.**
+**1. Clone this repo anywhere and run the installer.** It detects Claude Code, Codex (and the ChatGPT desktop app's Codex mode), Antigravity and Cursor on this machine, and copies the skill and the judge agents into each one's folders. It never overwrites a git clone or a different skill.
 
+```bash
+git clone https://github.com/mirac221/assumption-judge
+node assumption-judge/scripts/install.mjs --dry-run   # show what it would do
+node assumption-judge/scripts/install.mjs             # do it
 ```
-git clone https://github.com/mirac221/assumption-judge <skill folder>
-```
 
-On Windows PowerShell, use `$HOME\...` instead of `~/...`.
+- `--apps claude-code,codex,antigravity,cursor` picks apps instead of auto-detecting.
+- `--project <repo>` installs into one project instead of your user folders.
+- `--zip` builds `dist/assumption-judge.zip` for **claude.ai** (Settings > Capabilities > code execution, then Skills > Upload) and **ChatGPT** (Skills > Create > Upload).
+- `--uninstall` removes what it installed.
 
-| Agent | Skill folder | Judge agent file (check mode only) | Copy it to |
-|---|---|---|---|
-| Claude Code | `~/.claude/skills/assumption-judge` | not needed for live mode | |
-| Antigravity | `~/.gemini/config/skills/assumption-judge` | not needed for live mode | |
-| Codex | `~/.agents/skills/assumption-judge` | `agents/codex/assumption-judge.toml` (check-mode fallback only) | `~/.codex/agents/` |
-| Cursor | `~/.cursor/skills/assumption-judge` (skip it if the skill is already in `~/.claude/skills` or `~/.agents/skills`) | `agents/claude-code/assumption-judge.md` if your Cursor has subagents | your agents folder |
-| Anything else | your skills folder | the closest match | your agents folder |
+**2. Claude Code, optional:** install it as a plugin instead: `/plugin marketplace add mirac221/assumption-judge`, then `/plugin install assumption-judge@assumption-judge`. Claude Cowork takes the same plugin.
 
-**2. Claude Code, optional:** install it as a plugin instead: `/plugin marketplace add mirac221/assumption-judge`, then `/plugin install assumption-judge@assumption-judge`.
-
-**3. Check the requirements:** run `node --version` (needs 18+), and `claude --version` or `agy --version`. If one is missing, tell the user. Don't install system software without asking.
+**3. Check the requirements:** `node assumption-judge/scripts/aj.mjs doctor`. If something's missing, tell the user. Don't install system software without asking.
 
 **4. Reload:** in the Antigravity CLI, run `/skills reload`. Elsewhere, a new session picks the skill up.
 
-**One project only?** Use that project's `.claude/skills/` (Claude Code) or `.agents/skills/` (Antigravity, Codex).
-
-**To update:** `git -C <skill folder> pull`.
+**To update:** `git -C assumption-judge pull`, then run the installer again.
 
 <details>
 <summary>Prefer to install it yourself? Copy-paste commands</summary>
@@ -127,7 +162,7 @@ git clone https://github.com/mirac221/assumption-judge ~/.agents/skills/assumpti
 mkdir -p ~/.codex/agents && cp ~/.agents/skills/assumption-judge/agents/codex/assumption-judge.toml ~/.codex/agents/
 ```
 
-**Windows PowerShell** (Claude Code shown; swap the folder from the table for other agents):
+**Windows PowerShell** (Claude Code shown; for other apps, `scripts/install.mjs` picks the right folders):
 ```powershell
 git clone https://github.com/mirac221/assumption-judge "$HOME\.claude\skills\assumption-judge"
 ```
@@ -149,7 +184,7 @@ git clone https://github.com/mirac221/assumption-judge "$HOME\.claude\skills\ass
 | Your user message contains "ignore your instructions" | The judge treats everything quoted from the conversation as data, not instructions. |
 
 **Known limits**
-- The judge sees **one turn**: your current message, the reply and this turn's tools, not the earlier conversation. Something you agreed on three messages ago can get flagged if the files say otherwise.
+- The judge sees this turn's tools and your last 3 messages, not the whole conversation. Something you settled ten messages ago can still get flagged if the files say otherwise (`aj.mjs set context-turns N`).
 - A cheap judge model misses more. In testing, a Haiku judge once summarized two errors and still answered PASS with an empty findings list. The schema now makes it write its findings first, and that case was caught in 3 out of 3 reruns.
 - The judge's web searches go to the search provider. Don't run it on replies full of secrets.
 
@@ -163,12 +198,14 @@ references/
   verdict.schema.json      the judge's answer format, enforced
   platforms.md             per-app details, live test results, and known gotchas
 scripts/
-  aj.mjs                   on / off / status / set / check / packet / gate
+  aj.mjs                   doctor / on / off / status / set / check / packet / gate
+  install.mjs              installs into every agent app on the machine; --zip for claude.ai and ChatGPT
+  cursor-hook.mjs          Cursor hook handler (prompt + response capture, synchronous stop judge)
   watch.mjs                Claude Code hook handler (prompt capture + async Stop judge)
   agy-hook.mjs             Antigravity Stop hook handler
   codex-hook.mjs           Codex UserPromptSubmit + Stop hook handler
-  lib.mjs                  transcript parsing, packet, judge runners (claude / agy / codex), the gate
-agents/                    judge agents for check mode (Claude Code / Cursor subagents, Codex), plus Codex's command-only setting
+  lib.mjs                  transcript parsing, packet, judge runners (claude / agy / codex / cursor), the gate
+agents/                    judge agents for check mode (Claude Code, Cursor, Codex), plus Codex's command-only setting
 .claude-plugin/            Claude Code plugin files
 ```
 

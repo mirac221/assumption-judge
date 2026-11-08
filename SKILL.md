@@ -1,12 +1,12 @@
 ---
 name: assumption-judge
-description: Command-only. Run this skill only when the user invokes it by name (/assumption-judge, $assumption-judge, @assumption-judge, or "use assumption-judge"). Never load it on your own. When invoked, it turns on an independent judge agent that runs in parallel, reads the user's message and your reply, fact-checks the reply with its own knowledge, the project files and web search, and writes PASS or HALLUCINATION. It interrupts you only on HALLUCINATION, with evidence.
+description: Command-only. Runs only when the user invokes it by name (/assumption-judge, $assumption-judge, @assumption-judge, or "use assumption-judge"). Never load it on your own. Turns on an independent judge agent that fact-checks every assistant reply against the user's words, the project files, the real tool results and the web, catches hallucinated flags, APIs, versions, file contents and claimed work, and interrupts only on a HALLUCINATION, with evidence. Works in Claude Code, Cursor, Codex, ChatGPT, Antigravity and Claude apps.
 argument-hint: "[on|off|status|check|model <name>]"
 allowed-tools: Bash(node ${CLAUDE_SKILL_DIR}/scripts/aj.mjs *)
 license: Apache-2.0
-compatibility: Needs Node 18+. Live mode runs on Claude Code (CLI, desktop app or IDE; in parallel, via the claude CLI), Antigravity (a synchronous Stop hook, via the agy CLI) and Codex (synchronous project hooks, via codex exec or the claude CLI). Cursor and other agent apps with a shell get check mode (a judge subagent per reply). Not for chat-only uploads such as claude.ai skills.
+compatibility: Needs Node 18+. Live mode (hooks) in Claude Code, Cursor IDE and CLI, Codex CLI and ChatGPT desktop Codex mode, and Antigravity app, IDE and agy CLI, with the judge run by the claude, agy, codex or Cursor CLI. Chat apps (claude.ai, ChatGPT Chat and Work) use relay mode.
 metadata:
-  version: "0.5.1"
+  version: "0.6.0"
 hooks:
   UserPromptSubmit:
     - hooks:
@@ -28,13 +28,13 @@ hooks:
 
 You don't get to fact-check yourself.
 
-Once this is on, every reply you finish goes to a separate judge: a fresh agent that never sees your reasoning, only the user's words, your reply, and what your tools actually returned this turn. It checks your claims against its own knowledge, the project files and the web, and it writes **PASS** or **HALLUCINATION**. A gate script throws out any judge finding that isn't quoted verbatim from your reply and backed by evidence, so the judge can't hallucinate hallucinations either.
+Once this is on, every reply you finish goes to a separate judge: a fresh agent that never sees your reasoning, only the user's words (this message and a few earlier ones), your reply, and what your tools actually returned this turn. It checks your claims against the project files, the web and its own knowledge, and writes **PASS** or **HALLUCINATION**. A gate script throws out any finding that isn't quoted verbatim from your reply and backed by evidence, so the judge can't hallucinate hallucinations either.
 
 You hear from it **only** when it catches something. A PASS is silent.
 
-Why: the model that wrote the answer reads its own intent into it. It "remembers" the flag it meant to look up, the file it assumed it read, the API that sounded right. An agent with no stake in the answer has to check.
+Why: the model that wrote the answer reads its own intent into it. It "remembers" the flag it meant to look up, the file it assumed it read, the API that sounded right. Only an agent with no stake in the answer can check it honestly.
 
-`<skill>` below is the folder this file is in (in Claude Code: `${CLAUDE_SKILL_DIR}`). The scripts are plain Node 18+ with no install step. State goes in `.assumption-judge/` under the working directory, and that folder git-ignores itself.
+`<skill>` below is the folder this file is in (in Claude Code: `${CLAUDE_SKILL_DIR}`). Scripts are plain Node 18+ with no install step. State goes in `.assumption-judge/` under the working directory, and that folder git-ignores itself.
 
 ## Commands
 
@@ -42,147 +42,111 @@ The user's argument picks one. No argument means `on`.
 
 | Invocation | You do |
 |---|---|
-| `/assumption-judge` or `on` | Steps 1 to 3 below |
-| `off` | `node <skill>/scripts/aj.mjs off`, then confirm in one line |
+| `/assumption-judge` or `on` | Steps 1 to 4 below |
+| `off` | `node <skill>/scripts/aj.mjs off` (add `--global` if it was turned on that way), then confirm in one line |
 | `status` | `node <skill>/scripts/aj.mjs status`, then relay it |
-| `check` | `node <skill>/scripts/aj.mjs check --platform <claude-code\|antigravity\|codex>`: judges your last finished reply in **this** app's current conversation, synchronously. It never reads another app's transcripts. |
+| `check` | `node <skill>/scripts/aj.mjs check --platform <app>`: judges your last finished reply in **this** app's current conversation, right now. It never reads another app's transcripts. |
 | `model <name>` | `node <skill>/scripts/aj.mjs set model <name>`, then confirm |
 
 ## Turning it on
 
-### 1. Ask which model the judge runs on (once, only where the platform allows it)
+Copy this checklist and tick it off:
 
-Skip this if the user already named a model, or `.assumption-judge/config.json` already has one they chose.
+```
+- [ ] 1. doctor: which app, which judge runners
+- [ ] 2. ask which model the judge runs on (where the app allows it)
+- [ ] 3. switch it on with the command for this app
+- [ ] 4. tell the user in two or three lines
+```
 
-- **Claude Code / Claude desktop app:** ask with AskUserQuestion. Question: "Which model should the assumption judge run on? It runs once after every reply, with web search." Options:
-  - `Sonnet (Recommended)`: good fact-checker, moderate cost
-  - `Opus`: strictest, catches subtle errors, most quota
-  - `Haiku`: cheapest and fastest, but misses subtle errors and is more likely to raise false alarms
-  - `Same as me`: the model that wrote the reply (`inherit`)
-- **Antigravity:** run `agy models` and ask in chat, in one message, two questions.
-  - **Which model the judge runs on.** Antigravity offers Claude as third-party models, so lead with its Sonnet id (e.g. `claude-sonnet-4-6`, recommended: about 15 s per check in testing) and its Opus id (`claude-opus-4-6-thinking`: strictest, slower). Then the Gemini ids, or "same as me" (`inherit`). Use the exact ids `agy models` prints.
-  - **"Should every reply wait for the check, or should the check run in the background?"**
-    - `sync` (default): each reply pauses while the judge runs, and a catch is fixed right away.
-    - `deferred`: no pause, but a catch is raised at the start of their *next* message.
-- **Codex:** ask in chat which model the judge should use (a model id their Codex offers), or "same as me" (`inherit`).
-- **Anything else:** ask only if you can actually choose a subagent's model there.
+### 1. Run the doctor
+
+```bash
+node <skill>/scripts/aj.mjs doctor
+```
+
+It prints the app it detected (`claude-code`, `cursor`, `codex`, `antigravity`, or none), which judge runners are installed (`claude`, `agy`, `codex`, `cursor`), and what to do next. Then read **only your app's section** of [references/platforms.md](references/platforms.md):
+
+| You are running in | Mode | Section |
+|---|---|---|
+| Claude Code: CLI, Claude desktop app (Code tab), IDE extension | **Live, in parallel**: a background judge wakes you only on a catch | Claude Code |
+| Claude Cowork (Claude desktop app) | Live if hooks run there, otherwise check mode | Claude app |
+| Cursor: IDE or Cursor CLI (`agent`) | **Live, synchronous**: `stop` hook, a catch comes back as a follow-up message | Cursor |
+| Codex: CLI, IDE extension, ChatGPT desktop app in Codex mode | **Live, synchronous**: project hooks, after the user trusts them with `/hooks` | Codex |
+| Antigravity: app, IDE, `agy` CLI | **Live**: `sync` (judged before the turn ends) or `deferred` (no pause) | Antigravity |
+| claude.ai chat, ChatGPT Chat or Work, any app without a shell | **Relay**: a fresh subagent where the app has one, otherwise a fresh chat | Chat apps |
+
+The doctor says "app: not detected" when it can't tell. Then pick the row yourself, and pass `--platform` explicitly.
+
+### 2. Ask which model the judge runs on (once)
+
+Skip this if the user already named a model, or `.assumption-judge/config.json` already has one they chose. Ask only where you can actually choose. Your app's section lists the exact choices (Claude Code: AskUserQuestion with Sonnet (recommended), Opus, Haiku, Same as me; Antigravity: ids from `agy models`; Cursor and Codex: ask in chat).
 
 Be straight about cost: one judge run per reply, each with possible web searches, on the user's plan.
 
-### 2. Switch it on
+### 3. Switch it on
 
-Claude Code:
 ```bash
-node <skill>/scripts/aj.mjs on --model sonnet
+node <skill>/scripts/aj.mjs on --platform <app> --model <id>
 ```
-Models: `sonnet`, `opus`, `haiku`, `fable`, `inherit`, or a full `claude-*` id.
 
-Antigravity (app, CLI or IDE):
-```bash
-node <skill>/scripts/aj.mjs on --platform antigravity --model claude-sonnet-4-6 --mode sync
-```
-- **A workspace is open:** run it from the workspace root. It adds an `assumption-judge` entry to `<workspace>/.agents/hooks.json`.
-- **No workspace is open** (Antigravity says you're outside of a project), or the user wants it everywhere: add `--global`. That writes the entry to `~/.gemini/config/hooks.json` and keeps state in `~/.assumption-judge/`. A workspace with its own entry still wins, so nothing runs twice.
-- Tell the user which file you changed, and that Antigravity may need a reload or a new conversation before the hooks fire.
-- `--runner claude` uses the claude CLI instead of `agy`: no extra Antigravity conversations, but it needs that CLI installed.
+- `--platform`: `claude-code`, `cursor`, `codex` or `antigravity`. Run it from the project root.
+- `--global` (Cursor and Antigravity): hooks in the user-level config, for every project and for chats with no folder open.
+- `--runner claude|agy|codex|cursor`: which CLI runs the judge. The default is the best one installed for your app.
+- `--mode deferred` (Antigravity): no pause; a catch is raised at the start of the next message.
+- `--max-interrupts N` (default 2 per user message), `--no-web`.
 
-Codex (run it from the repo root):
-```bash
-node <skill>/scripts/aj.mjs on --platform codex --model <id>
-```
-This adds two hooks (UserPromptSubmit and Stop) to `<repo>/.codex/hooks.json` and leaves any hooks already there untouched. The judge runs with `codex exec` if the codex CLI is on PATH, otherwise with the claude CLI (`--runner` overrides). **Codex only runs project hooks after the user trusts them**, so tell the user to run `/hooks` in Codex, review the two assumption-judge hooks and trust them. The project's `.codex/` layer must be trusted too. Until they do, nothing is judged.
+If it prints a WARNING that the judge's CLI wasn't found or isn't logged in, live mode can't run. Tell the user the fix it printed, and use check mode (below) until then.
 
-Options for all: `--max-interrupts N` (default 2 per user message) and `--no-web`.
+### 4. Tell the user
 
-If it prints a warning that the judge's CLI wasn't found, live mode can't run. Tell the user, and use check mode (below).
+In two or three lines:
+- It's on, with the model they chose, and which file you changed (if any).
+- From their **next** message on, every reply gets judged, and they only hear about it on a HALLUCINATION. Say whether replies pause while the judge runs (Cursor, Codex, Antigravity `sync`) or not (Claude Code, Antigravity `deferred`).
+- Anything they must do: Codex needs `/hooks` trust; Cursor and Antigravity may need a restart or a new conversation.
+- `/assumption-judge off` stops it. In Claude Code it also stops when the session ends.
 
-### 3. Tell the user, in two or three lines
-
-- It's on, with the model they chose.
-- From their **next** message on, every reply gets judged, and you'll only be interrupted on a HALLUCINATION.
-  - Claude Code: the judge runs in the background, in parallel.
-  - Antigravity, `sync`: each reply pauses while the judge runs (about 15 to 25 s with Claude Sonnet via Antigravity in testing).
-  - Antigravity, `deferred`: no pause, and a catch shows up at the start of their next message.
-  - Codex: hooks are synchronous, so each reply pauses while the judge runs.
-- `/assumption-judge off` stops it.
-  - Claude Code: it also stops when the session ends, so invoke it again in a new session.
-  - Antigravity and Codex: it stays on until `off` (add `--global` if it was turned on with `--global`), which disables or removes the hook entries.
-
-The reply you're writing now (the activation turn) isn't judged.
-
-## How live mode works (Claude Code)
-
-Invoking this skill registers two hooks for the rest of the session:
-
-1. **UserPromptSubmit** saves the user's message verbatim.
-2. **Stop** (async, `asyncRewake`) fires when you finish a reply. In the background, it starts a separate headless `claude -p` judge:
-   - tools: `Read`, `Grep`, `Glob`, `WebSearch`, `WebFetch` only
-   - no MCP servers, no session saved, output forced to the verdict schema
-   - working directory: the project, so it can open the files you talked about
-   - packet: the brief, the user's message, your reply, and a digest of this turn's tool calls and results
-
-   Then the gate checks the verdict. On PASS the hook exits quietly. On HALLUCINATION it exits 2, which wakes you right away, even if the session is idle.
-
-You keep working while the judge runs. It doesn't block you or the user.
-
-## How live mode works (Antigravity)
-
-`aj.mjs on --platform antigravity` registers a **Stop** and a **PreInvocation** hook. The Stop hook reads the user's words from `lastUserInput`, and your reply and tool steps from the transcript. It then runs a separate `agy -p` judge in plan mode, with output forced to the verdict schema and the chosen `--model`, and gates the verdict.
-- **`sync`:** on HALLUCINATION, the Stop hook returns `{"decision":"continue"}` with the correction, which puts you straight back in the loop before the turn ends.
-- **`deferred`:** the Stop hook hands the turn to a detached judge and returns at once. On HALLUCINATION, PreInvocation injects the correction as a system message before your next model call. It's about your **previous** reply, so deal with it before answering the new message.
-- **No workspace:** the judge runs in an empty private folder and gets told there's no project, so it judges project claims from the trace only. Your home folder is never listed.
-
-## How live mode works (Codex)
-
-`aj.mjs on --platform codex` writes two project hooks to `<repo>/.codex/hooks.json`. The user has to trust them with `/hooks` first.
-1. **UserPromptSubmit** saves the user's message verbatim. It ignores the continuation prompts that the hook itself causes.
-2. **Stop** (synchronous) reads your reply from `last_assistant_message` and the tool steps from `transcript_path`. It then runs the judge:
-   - `codex --search exec --sandbox read-only --ephemeral --output-schema <schema> -o <file>`, with the packet on stdin;
-   - or the claude CLI.
-
-   On HALLUCINATION it returns `{"decision":"block","reason":…}`, and Codex turns the reason into a continuation prompt for you. On PASS it prints nothing.
+The reply you're writing now, the activation turn, isn't judged.
 
 ## When the judge interrupts you
 
-You'll get a system message starting with `[assumption-judge] HALLUCINATION`. Then:
+You'll get a message starting with `[assumption-judge] HALLUCINATION`. Then:
 
 1. **Tell the user first**, in plain words: what you said, what's actually true, and the evidence the judge cited. Don't bury it.
 2. **Correct it.** If code or files you wrote depend on the wrong claim, fix them, or say you will.
 3. **Don't argue in secret.** If you have hard evidence the judge is wrong (a tool result, a file, a doc), show that evidence to the user and let them decide. Never quietly ignore a finding.
-4. **Don't re-check yourself to dodge it.** Your corrected reply goes back to the judge automatically, up to the interrupt cap (2 per user message by default).
-5. **Don't game it.** Don't hedge every sentence or stop making claims just to avoid being judged. The judge doesn't flag honest uncertainty ("I think", "I haven't checked"). It flags false facts and guesses stated as facts.
+4. **Check the source directly.** Open the cited file or URL with your file or fetch tool. Don't re-run your own reasoning to dodge it. Your correction goes back to the judge automatically, up to the interrupt cap.
+5. **Don't game it.** Don't hedge every sentence or stop making claims to avoid the judge. It doesn't flag honest uncertainty ("I think", "I haven't checked"). It flags false facts, and guesses stated as facts.
 
-If you get `[assumption-judge] The judge could not run`, tell the user once. The reply wasn't checked.
+If you get `[assumption-judge] The judge could not run`, tell the user once. That reply wasn't checked.
 
-## Check mode (Cursor, others, or no hooks / no judge CLI)
+## Check mode (no hooks, or no judge CLI)
 
-Without hooks, nothing can run on its own, so the check happens **before** you send instead:
+Without hooks nothing runs on its own, so you check **before** you send:
 
-1. Write your draft reply to a file, and the user's message, verbatim, to another. Optionally write the tool calls and results you relied on to a third.
+1. Write your draft reply to a file, and the user's message, verbatim, to another. Optionally write the tool calls and results you relied on to a third, and the user's earlier messages to a fourth.
 2. Build the packet:
    ```bash
-   node <skill>/scripts/aj.mjs packet --prompt-file prompt.txt --reply-file draft.md --trace-file trace.txt
+   node <skill>/scripts/aj.mjs packet --prompt-file prompt.txt --reply-file draft.md --trace-file trace.txt --earlier-file earlier.txt
    ```
 3. Spawn a **fresh** judge subagent with exactly the message it prints, and nothing else.
-   - Use the installed `assumption-judge` agent if there is one: `assumption_judge` in Codex, and `assumption-judge:assumption-judge` when this came in as a Claude Code plugin.
-   - Otherwise use a general-purpose agent that has web search.
+   - Use the installed `assumption-judge` agent if there is one (`assumption_judge` in Codex, `assumption-judge:assumption-judge` as a Claude Code plugin). Otherwise use a general-purpose agent that has web search.
    - Never a fork: a judge that sees your context isn't independent.
-4. Save its reply to a file, then gate it:
-   ```bash
-   node <skill>/scripts/aj.mjs gate --verdict verdict.json
-   ```
+   - If no subagent is possible but a judge CLI is installed, run `aj.mjs check --prompt-file … --reply-file …` instead; it runs the same judge headless.
+4. Save its reply to a file, then gate it: `node <skill>/scripts/aj.mjs gate --verdict verdict.json`
 5. On PASS, send your reply. On HALLUCINATION, fix the reply before sending, and tell the user what the judge caught.
 
-In check mode, nothing enforces the judge's independence, so say so if the user asks. Platform details: [references/platforms.md](references/platforms.md).
+In check mode nothing enforces the judge's independence. Say so if the user asks.
 
 ## What the gate enforces
 
-A judge finding only interrupts you when all of these hold:
+A finding only interrupts when all of these hold:
 - status `contradicted` (false), `assumed` (a guess stated as fact), or `misread_request` (answered something the user didn't ask)
 - severity `major`, and confidence of at least 0.7
-- the quote appears verbatim in your reply; for `misread_request`, it may come from the user's message instead
-- it has evidence, and a `web` source must include a URL
-- a `knowledge`-only finding must be `contradicted` at confidence 0.9 or higher
+- the quote appears verbatim in your reply (for `misread_request`, it may come from the user's message)
+- it has evidence, and a `web` source includes a URL
+- a `knowledge`-only finding is `contradicted` at confidence 0.9 or higher
+- a time-sensitive claim (versions, models, prices, releases) is settled by a live source, never from memory
 
 Everything else is logged in `.assumption-judge/log.jsonl` and never interrupts. `aj.mjs status` shows the counts and the last verdicts.
 
@@ -190,12 +154,11 @@ Everything else is logged in `.assumption-judge/log.jsonl` and never interrupts.
 
 | File | What |
 |---|---|
-| `scripts/aj.mjs` | Commands: on, off, status, set, check, packet, gate |
-| `scripts/watch.mjs` | The hook handler for Claude Code live mode |
-| `scripts/agy-hook.mjs` | The Stop hook handler for Antigravity live mode |
-| `scripts/codex-hook.mjs` | The UserPromptSubmit and Stop hook handler for Codex live mode |
-| `scripts/lib.mjs` | Transcript parsing, packet, headless judge runner, gate |
+| `scripts/aj.mjs` | Commands: doctor, on, off, status, set, check, packet, gate |
+| `scripts/install.mjs` | Installs the skill and judge agents for every app on the machine; `--zip` builds the chat-app upload |
+| `scripts/watch.mjs`, `cursor-hook.mjs`, `codex-hook.mjs`, `agy-hook.mjs` | Hook handlers for Claude Code, Cursor, Codex and Antigravity |
+| `scripts/lib.mjs` | Transcript parsing, packet, judge runners, the gate |
+| [references/platforms.md](references/platforms.md) | Per-app install, model choice, how live mode works, test results and limits |
 | [references/judge-brief.md](references/judge-brief.md) | The judge's instructions. Don't edit them to go easier on yourself. |
 | [references/verdict.schema.json](references/verdict.schema.json) | The verdict format, enforced with `--json-schema` |
-| [references/platforms.md](references/platforms.md) | Install, model choice and limits per platform |
-| `agents/` | Judge agent definitions for check mode (Claude Code and Cursor subagents, Codex) |
+| `agents/` | Judge agents for check mode: Claude Code, Cursor, Codex |

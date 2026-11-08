@@ -15,7 +15,7 @@ import crypto from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import {
-  agyTurn, appendLog, isManagementTurn, buildPacket, clip, gate, interruptMessage, isJudgeCommand, loadConfig, readJSON,
+  agyTurns, appendLog, earlierText, isManagementTurn, buildPacket, clip, gate, interruptMessage, isJudgeCommand, loadConfig, readJSON,
   readStdin, runJudge, sessionFile, stateDir, traceText, writeJSON,
 } from './lib.mjs';
 
@@ -40,11 +40,11 @@ export function resolveScope(input) {
   return { ws, stateRoot, judgeCwd, cfg: loadConfig(stateRoot) };
 }
 
-function judgeTurn({ input, scope, prompt, answer, steps }) {
+function judgeTurn({ input, scope, prompt, answer, steps, earlier = '' }) {
   const { cfg, stateRoot, judgeCwd, ws } = scope;
   const model = cfg.model === 'inherit' ? (input.modelName || 'inherit') : cfg.model;
   const packet = buildPacket({
-    prompt, reply: answer, trace: traceText(steps), cwd: judgeCwd, web: cfg.web,
+    prompt, reply: answer, trace: traceText(steps), cwd: judgeCwd, web: cfg.web, earlier,
   }) + (ws ? '' : '\n\nNo project folder is open in this chat: judge project claims from the TRACE only, and facts from the web.');
   const res = runJudge({ runner: cfg.runner, packet, model, cwd: judgeCwd, web: cfg.web, maxTurns: cfg.max_turns, timeoutS: cfg.timeout_s });
   const base = { session: input.conversationId, platform: 'antigravity', mode: cfg.mode, workspace: ws ? 'yes' : 'none' };
@@ -64,7 +64,9 @@ async function onStop(input) {
   if (!cfg.enabled) return out({});
   if (input.terminationReason && input.terminationReason !== 'NO_TOOL_CALL') return out({});
 
-  const turn = agyTurn(input.transcriptPath);
+  const all = agyTurns(input.transcriptPath);
+  const turn = all.at(-1) || { prompt: '', reply: '', steps: [] };
+  const earlier = earlierText(all, cfg.context_turns);
   const prompt = String(input.lastUserInput || turn.prompt || '').trim();
   const answer = String(turn.reply || '').trim();
   if (!prompt || isJudgeCommand(prompt) || isManagementTurn(turn.steps)) return out({});
@@ -85,13 +87,13 @@ async function onStop(input) {
   if (cfg.mode === 'deferred') {
     // Hand the turn to a detached worker and return immediately: no freeze.
     const job = path.join(stateDir(stateRoot), 'jobs', `${Date.now()}-${process.pid}.json`);
-    writeJSON(job, { input, prompt, answer, steps: turn.steps, prompt_key: promptKey });
+    writeJSON(job, { input, prompt, answer, steps: turn.steps, earlier, prompt_key: promptKey });
     const child = spawn(process.execPath, [SELF, 'bg', job], { detached: true, stdio: 'ignore', windowsHide: true, env: process.env });
     child.unref();
     return out({});
   }
 
-  const { g, error, model } = judgeTurn({ input, scope, prompt, answer, steps: turn.steps });
+  const { g, error, model } = judgeTurn({ input, scope, prompt, answer, steps: turn.steps, earlier });
   if (error) {
     if (!st.error_reported) {
       writeJSON(sf, { ...st, error_reported: true });
@@ -110,7 +112,7 @@ async function onBackground(jobFile) {
   try { fs.rmSync(jobFile, { force: true }); } catch {}
   if (!job) return;
   const scope = resolveScope(job.input);
-  const { g, error, model } = judgeTurn({ input: job.input, scope, prompt: job.prompt, answer: job.answer, steps: job.steps });
+  const { g, error, model } = judgeTurn({ input: job.input, scope, prompt: job.prompt, answer: job.answer, steps: job.steps, earlier: job.earlier || '' });
   const sf = sessionFile(scope.stateRoot, job.input.conversationId);
   const st = readJSON(sf, {});
   if (error) {
