@@ -2,9 +2,12 @@
 
 Checked against Claude Code 2.1.317 and the Antigravity CLI 1.5.3 in November 2026, with live end-to-end tests on both (Windows 11), and against the Cursor and Codex docs of the same month.
 
+These tools change fast. If anything here disagrees with your installed version's docs or `--help`, trust those, and tell the user what was different.
+
 ## Contents
-- The table below, and "Running only on command"
-- Claude Code · Codex live mode · Codex check mode · Antigravity · Cursor · Claude app · ChatGPT app · Chat apps: relay mode · Fallback ladder These tools change fast. If anything here disagrees with your installed version's docs or `--help`, trust those, and tell the user what was different.
+The table below · Running only on command · Claude Code · Codex live mode · Codex check mode · Antigravity · Cursor · Claude app · ChatGPT app · Chat apps: relay mode · Fallback ladder
+
+Read your own app's section. Skip the other apps.
 
 | Platform | Mode | Model choice | Independence |
 |---|---|---|---|
@@ -51,10 +54,11 @@ How to invoke it:
    ```
    claude -p --model <m> --tools Read,Grep,Glob,WebSearch,WebFetch --allowedTools <same>
      --disallowedTools mcp__* --strict-mcp-config --no-session-persistence
-     --max-turns 25 --output-format json --json-schema <verdict.schema.json>
+     --max-turns 40 --output-format json --json-schema <verdict.schema.json>
    ```
    - The working directory is the project.
    - The packet goes in on stdin.
+   - `--max-turns` comes from `aj.mjs set max-turns N` (default 40).
    - `ASSUMPTION_JUDGE_CHILD=1` stops the judge's own session from judging itself.
 4. It gates the verdict.
    - **HALLUCINATION:** exit 2. Claude Code shows stderr to the main agent as a system reminder and wakes it immediately, even if the session is idle.
@@ -135,12 +139,10 @@ The claude runner (`--runner claude`) is the tested path.
 - **Skill:** `<workspace>/.agents/skills/assumption-judge/` or `~/.gemini/config/skills/assumption-judge/`. Antigravity ignores the Claude Code `hooks:` key in SKILL.md frontmatter, and the skill shows up fine (tested).
 - **No agent file.** Antigravity's customization system (rules, skills, plugins, hooks, MCP) has no custom subagent files, and `agy agents` lists none, so this skill ships none for it. Live mode doesn't need one. If live mode can't run, `aj.mjs check --prompt-file p --reply-file r` with `aj.mjs set runner agy` runs the same headless judge on demand.
 
-**Reported from the Antigravity app (fixed in 0.4.0):**
-- It didn't work with no workspace open.
-- Every reply froze while the judge ran.
-- `check` picked up a Claude Code transcript. That one is a privacy bug: the wrong app's conversation went to the judge.
-
-The fixes are `--global`, `--mode deferred`, and a `check` that only reads the current app's transcripts and refuses to guess.
+**Three things to know in the Antigravity app:**
+- No workspace open: turn it on with `--global`.
+- Replies pausing while the judge runs: that's `sync` mode. `--mode deferred` doesn't pause.
+- `check` only reads Antigravity's own transcripts, never another app's. If it can't tell which app it's in, it stops and asks for `--platform`.
 
 **Judge model.** Antigravity offers Claude as third-party models, and the agy judge runs them fine. Live test, wrong "8080" against `config.toml` = 9090:
 - `claude-sonnet-4-6`: `contradicted`/`project_file` in 14.5 s

@@ -1,6 +1,6 @@
 {
   "name": "assumption-judge",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "description": "Your agent doesn't get to fact-check itself. An independent judge runs in parallel, checks every reply against the user's words, the project and the web, and interrupts only on a hallucination, with evidence.",
   "author": { "name": "mirac221", "url": "https://github.com/mirac221" },
   "homepage": "https://github.com/mirac221/assumption-judge",

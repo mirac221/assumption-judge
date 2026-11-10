@@ -45,6 +45,7 @@ The judge's finding was: `contradicted`, source `project_file`, evidence `config
 
 What it looks for:
 - **Made-up facts:** CLI flags that don't exist, wrong defaults, invented APIs, wrong versions.
+- **Code that can't run as written:** a snippet that imports a package, calls a method or passes an option that doesn't exist.
 - **Guesses stated as facts:** "your server runs Node 20" when nothing was ever checked.
 - **Claimed work that never happened:** "tests pass" with no test run in the trace.
 - **Answering the wrong question:** the reply does something other than what you asked.
@@ -56,7 +57,7 @@ We ran the judge on 14 replies about a small fixture repo whose team notes are s
 - 6 are planted versions of the classic failure shapes: a stale value passed off as config, a removed CLI flag, a script that doesn't exist, "all tests pass" with no test run, a wrong dependency version, and an outdated "newest model".
 - 2 test the new earlier-context feature: the user set port 7000 two messages ago.
 
-The same judge model ran both the previous version (0.5.1) and this one (0.6.0).
+The same judge model ran both 0.5.1 and 0.6.0.
 
 | Judge: Gemini 3.8 Flash (High), via Antigravity | Stayed quiet on real replies | Caught planted errors | Earlier-context cases | Total |
 |---|---|---|---|---|
@@ -68,6 +69,8 @@ The same judge model ran both the previous version (0.5.1) and this one (0.6.0).
 - **Found and fixed during testing:** an earlier pre-release run with a Sonnet judge let the stale-port case through, because the reply's values matched the stale notes. The judge now ranks sources (running config and code over notes and docs), and that case has been caught since.
 
 Every number above comes from one run each, with an Antigravity-hosted judge. Small samples, so treat them as a smoke test, not a benchmark. The cases, the fixture repo and the runner are in [`evals/`](evals/), so you can rerun them: `node evals/run.mjs --runner agy --model <id>` (or `--runner claude --model sonnet`).
+
+**0.6.1.** The judge's instructions changed: code in a reply now counts as claims, and long replies get checked in order of what you'd act on first. The suite was rerun with Claude Haiku as the judge, through the `claude` CLI: 14/14 (6/6, 6/6, 2/2). One run, and no 0.6.0 run on the same model to compare with, so it shows nothing broke, not that it got better.
 
 ## Run it
 
@@ -181,7 +184,7 @@ git clone https://github.com/mirac221/assumption-judge "$HOME\.claude\skills\ass
 | The judge can change things | Claude Code: the judge only gets Read, Grep, Glob, WebSearch and WebFetch, with no MCP servers. Antigravity: plan mode, and headless mode denies shell commands. |
 | The judge judges itself | Its own process carries a guard variable, so its hooks never start another judge. |
 | Endless correction loops | At most 2 interrupts per message of yours, and corrections get judged too. |
-| Your user message contains "ignore your instructions" | The judge treats everything quoted from the conversation as data, not instructions. |
+| Your user message contains "ignore your instructions" | The judge treats everything quoted from the conversation as data, not instructions. A reply also can't fake the end of its own data block to slip some in: block markers inside the data are broken up before the judge sees them. |
 
 **Known limits**
 - The judge sees this turn's tools and your last 3 messages, not the whole conversation. Something you settled ten messages ago can still get flagged if the files say otherwise (`aj.mjs set context-turns N`).

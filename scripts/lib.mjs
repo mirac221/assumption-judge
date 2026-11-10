@@ -5,7 +5,7 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 export const SKILL_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-export const VERSION = '0.6.0';
+export const VERSION = '0.6.1';
 export const MODELS = ['sonnet', 'opus', 'haiku', 'fable', 'inherit'];
 export const DEFAULTS = {
   enabled: false,
@@ -322,7 +322,13 @@ export function projectMap(root, { depth = 2, max = 150 } = {}) {
   return lines.join('\n') || '(empty)';
 }
 
-const fence = (tag, body) => `<<<${tag}\n${String(body ?? '').trim() || '(empty)'}\n${tag}>>>`;
+// A reply (or a tool result, or a file name) that contains "REPLY>>>" could close its own block early and pass
+// off whatever follows as instructions to the judge. Break any marker inside the data with a space.
+const FENCE_TAGS = 'EARLIER|USER|REPLY|TRACE|FILES';
+export const defang = (s) => String(s ?? '')
+  .replace(new RegExp(`<<<(?=(?:${FENCE_TAGS})\\b)`, 'g'), '<<< ')
+  .replace(new RegExp(`\\b(${FENCE_TAGS})>>>`, 'g'), '$1 >>>');
+const fence = (tag, body) => `<<<${tag}\n${defang(body).trim() || '(empty)'}\n${tag}>>>`;
 
 export function buildPacket({ prompt, reply, trace, cwd, web, earlier = '' }) {
   const brief = fs.readFileSync(path.join(SKILL_DIR, 'references', 'judge-brief.md'), 'utf8');
@@ -590,7 +596,9 @@ export function gate(verdict, { reply, prompt }) {
   if (!verdict || typeof verdict !== 'object' || !Array.isArray(verdict.claims)) {
     return { decision: 'JUDGE_ERROR', counted: [], dropped: [], summary: 'no valid verdict JSON' };
   }
-  const nReply = norm(reply), nPrompt = norm(prompt);
+  // The judge read the defanged text (see fence), so a quote may carry "REPLY >>>" where the reply had "REPLY>>>".
+  const both = (s) => { const a = norm(s), b = norm(defang(s)); return a === b ? a : `${a} ${b}`; };
+  const nReply = both(reply), nPrompt = both(prompt);
   const counted = [], dropped = [], supported = [];
   verdict.claims.forEach((c, i) => {
     const why = [];

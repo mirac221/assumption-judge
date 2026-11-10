@@ -6,7 +6,7 @@ allowed-tools: Bash(node ${CLAUDE_SKILL_DIR}/scripts/aj.mjs *)
 license: Apache-2.0
 compatibility: Needs Node 18+. Live mode (hooks) in Claude Code, Cursor IDE and CLI, Codex CLI and ChatGPT desktop Codex mode, and Antigravity app, IDE and agy CLI, with the judge run by the claude, agy, codex or Cursor CLI. Chat apps (claude.ai, ChatGPT Chat and Work) use relay mode.
 metadata:
-  version: "0.6.0"
+  version: "0.6.1"
 hooks:
   UserPromptSubmit:
     - hooks:
